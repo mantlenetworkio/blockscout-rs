@@ -1,4 +1,4 @@
-FROM lukemathwalker/cargo-chef:0.1.39-rust-1.63-buster as chef
+FROM lukemathwalker/cargo-chef:0.1.52-rust-buster as chef
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y curl wget unzip
