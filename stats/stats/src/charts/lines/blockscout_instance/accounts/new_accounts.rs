@@ -13,29 +13,47 @@ impl StatementFromRange for NewAccountsStatement {
         completed_migrations: &IndexerMigrations,
         _enabled_update_charts_recursive: &HashSet<ChartKey>,
     ) -> Statement {
-        // `MIN_UTC` does not fit into postgres' timestamp. Unix epoch start should be enough
-        let min_timestamp = DateTime::<Utc>::UNIX_EPOCH;
-        // All transactions from the beginning must be considered to calculate new accounts correctly.
-        // E.g. if account was first active both before `range.start()` and within the range,
-        // we don't want to count it within the range (as it's not a *new* account).
-        let range = range.map(|r| min_timestamp..r.end);
+        // An account is new on the date of its first transaction (in chain order).
+        // Instead of scanning the whole history, the first transaction in the range of each
+        // active account is compared with its first transaction overall, which is a single
+        // index lookup by `from_address_hash` (ordered by `block_number`). The account is
+        // counted iff both are in the same block, i.e. the first transaction is in the range,
+        // so every account is counted in exactly one range.
+        //
+        // The values are calculated per date, thus the range start is moved to the
+        // beginning of its day for the first date to be complete.
+        let range = range.map(|r| day_start(&r.start.date_naive())..r.end);
         if completed_migrations.denormalization {
             sql_with_range_filter_opt!(
                 DbBackend::Postgres,
                 r#"
                     SELECT
-                        first_tx.date as date,
+                        first_tx.timestamp::date as date,
                         count(*)::TEXT as value
                     FROM (
-                        SELECT DISTINCT ON (t.from_address_hash)
-                            t.block_timestamp::date as date
+                        SELECT
+                            t.from_address_hash,
+                            MIN(t.block_number) as block_number
                         FROM transactions  t
                         WHERE
                             t.block_timestamp != to_timestamp(0) AND
                             t.block_consensus = true {filter}
-                        ORDER BY t.from_address_hash, t.block_timestamp
+                        GROUP BY t.from_address_hash
+                    ) range_first_tx
+                    CROSS JOIN LATERAL (
+                        SELECT
+                            p.block_number,
+                            p.block_timestamp as timestamp
+                        FROM transactions  p
+                        WHERE
+                            p.from_address_hash = range_first_tx.from_address_hash AND
+                            p.block_timestamp != to_timestamp(0) AND
+                            p.block_consensus = true
+                        ORDER BY p.block_number
+                        LIMIT 1
                     ) first_tx
-                    GROUP BY first_tx.date;
+                    WHERE first_tx.block_number = range_first_tx.block_number
+                    GROUP BY first_tx.timestamp::date;
                 "#,
                 [],
                 "t.block_timestamp",
@@ -46,19 +64,34 @@ impl StatementFromRange for NewAccountsStatement {
                 DbBackend::Postgres,
                 r#"
                     SELECT
-                        first_tx.date as date,
+                        first_tx.timestamp::date as date,
                         count(*)::TEXT as value
                     FROM (
-                        SELECT DISTINCT ON (t.from_address_hash)
-                            b.timestamp::date as date
+                        SELECT
+                            t.from_address_hash,
+                            MIN(t.block_number) as block_number
                         FROM transactions  t
                         JOIN blocks        b ON t.block_hash = b.hash
                         WHERE
                             b.timestamp != to_timestamp(0) AND
                             b.consensus = true {filter}
-                        ORDER BY t.from_address_hash, b.timestamp
+                        GROUP BY t.from_address_hash
+                    ) range_first_tx
+                    CROSS JOIN LATERAL (
+                        SELECT
+                            p.block_number,
+                            pb.timestamp
+                        FROM transactions  p
+                        JOIN blocks        pb ON p.block_hash = pb.hash
+                        WHERE
+                            p.from_address_hash = range_first_tx.from_address_hash AND
+                            pb.timestamp != to_timestamp(0) AND
+                            pb.consensus = true
+                        ORDER BY p.block_number
+                        LIMIT 1
                     ) first_tx
-                    GROUP BY first_tx.date;
+                    WHERE first_tx.block_number = range_first_tx.block_number
+                    GROUP BY first_tx.timestamp::date;
                 "#,
                 [],
                 "b.timestamp",
@@ -97,11 +130,9 @@ impl RemoteQueryBehaviour for NewAccountsQueryBehaviour {
     }
 }
 
-/// Note:  The intended strategy is to update whole range at once, even
-/// though the implementation allows batching. The batching was done
-/// to simplify interface of the data source.
-///
-/// Thus, use max batch size in the `DirectVecLocalDbChartSource` for it.
+/// Note: each batch only scans transactions within its range (plus one
+/// index lookup per active account), so the update is split into batches
+/// to keep every statement reasonably short.
 pub type NewAccountsRemote = RemoteDatabaseSource<NewAccountsQueryBehaviour>;
 
 pub struct Properties;
@@ -129,7 +160,7 @@ define_and_impl_resolution_properties!(
     base_impl: Properties
 );
 
-pub type NewAccounts = DirectVecLocalDbChartSource<NewAccountsRemote, BatchMaxDays, Properties>;
+pub type NewAccounts = DirectVecLocalDbChartSource<NewAccountsRemote, Batch30Days, Properties>;
 pub type NewAccountsInt = MapParseTo<StripExt<NewAccounts>, i64>;
 pub type NewAccountsWeekly = DirectVecLocalDbChartSource<
     MapToString<SumLowerResolution<NewAccountsInt, Week>>,
