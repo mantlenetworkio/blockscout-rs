@@ -27,7 +27,7 @@ actix-prost = { version = "0.3.0" }
 actix-prost-macros = { version = "0.3.0" }
 actix-prost-build = { version = "0.3.0" }
 actix-web = { version = "4" }
-alloy-json-abi = { version = "0.8.10" }
+alloy-json-abi = { version = "1.5.7" }
 amplify = { version = "4.7.0" }
 anyhow = { version = "1" }
 async-std = { version = "^1" }
@@ -47,7 +47,7 @@ mismatch = { version = "1.0" }
 mockall = { version = "0.13.0" }
 paste = { version = "1.0.14" }
 pretty_assertions = { version = "1.3" }
-prometheus = { version = "0.13" }
+prometheus = { version = "0.14" }
 prost = { version = "0.14" }
 prost-build = { version = "0.14" }
 reqwest = { version = "0.12.9" }

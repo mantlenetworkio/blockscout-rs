@@ -1,8 +1,6 @@
 import React, { ChangeEvent, FormEvent, FormEventHandler } from 'react';
 
-import { Input, InputGroup, InputLeftAddon, InputRightElement } from '@chakra-ui/input';
-import { chakra, IconButton } from '@chakra-ui/react';
-import { useColorModeValue } from '@chakra-ui/color-mode';
+import { chakra, IconButton, Input, InputGroup, InputLeftAddon, InputRightElement, useColorModeValue } from '@chakra-ui/react';
 
 import  { SearchIcon } from '@chakra-ui/icons'
 

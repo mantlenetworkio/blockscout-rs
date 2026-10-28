@@ -364,7 +364,13 @@ paths:
           in: body
           required: true
           schema:
-            $ref: '#/definitions/DomainsExtractorBatchResolveAddressNamesBody'
+            type: object
+            properties:
+              addresses:
+                type: array
+                items:
+                  type: string
+                title: List of requested addresses
       tags:
         - DomainsExtractor
   /api/v1/{chain_id}/addresses:lookup:
@@ -632,14 +638,6 @@ paths:
       tags:
         - Health
 definitions:
-  DomainsExtractorBatchResolveAddressNamesBody:
-    type: object
-    properties:
-      addresses:
-        type: array
-        items:
-          type: string
-        title: List of requested addresses
   HealthCheckResponseServingStatus:
     type: string
     enum:
