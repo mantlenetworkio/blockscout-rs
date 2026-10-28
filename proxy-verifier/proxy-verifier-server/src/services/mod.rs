@@ -55,6 +55,7 @@ pub(crate) const VYPER_EVM_VERSIONS: [&str; 11] = [
     "default",
 ];
 
+#[allow(clippy::result_large_err)]
 pub(crate) async fn verify<'a, Request, Verify, VerifyOutput>(
     blockscout_clients: &'a BTreeMap<String, proxy_verifier_logic::blockscout::Client>,
     eth_bytecode_db_client: &'a eth_bytecode_db_proto::http_client::Client,
@@ -83,6 +84,7 @@ where
     )))
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) async fn list_compilers<'a, List, ListOutput, EvmVersion: Into<String>>(
     eth_bytecode_db_client: &'a eth_bytecode_db_proto::http_client::Client,
     list_compiler_versions: List,

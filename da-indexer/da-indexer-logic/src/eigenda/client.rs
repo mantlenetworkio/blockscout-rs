@@ -46,6 +46,7 @@ impl Client {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     pub async fn retrieve_blob_with_retries(
         &self,
         batch_id: u64,
@@ -86,6 +87,7 @@ impl Client {
         Err(last_err.into())
     }
 
+    #[allow(clippy::result_large_err)]
     async fn retrieve_blob(
         &self,
         batch_id: u64,

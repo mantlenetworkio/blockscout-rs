@@ -11,7 +11,7 @@ use tokio::sync::Semaphore;
 async fn compilers<Compiler: EvmCompiler>(list_url: &str) -> EvmCompilersPool<Compiler> {
     let tempdir = tempfile::tempdir().unwrap();
     let url = list_url.try_into().expect("Getting url");
-    let fetcher = ListFetcher::<DetailedVersion>::new(url, tempdir.into_path(), None, None)
+    let fetcher = ListFetcher::<DetailedVersion>::new(url, tempdir.keep(), None, None)
         .await
         .expect("Fetch releases");
     let threads_semaphore = Arc::new(Semaphore::new(1));

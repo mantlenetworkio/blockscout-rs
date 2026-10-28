@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 mod addr_reverse_names;
 mod address_names;
 pub use addr_reverse_names::AddrReverseNamesView;

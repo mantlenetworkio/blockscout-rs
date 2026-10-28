@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 #![allow(dead_code)]
 
 // mod alliance_solidity_multi_part_batch_import;

@@ -196,7 +196,7 @@ where
                 .await
                 .map_err(ChartError::IndexerDB)?,
         };
-        let last_accurate_point = last_accurate_point::<ChartProps, Query>(
+        let last_accurate_point = last_accurate_point::<ChartProps>(
             chart_id,
             min_indexer_block,
             cx.stats_db,

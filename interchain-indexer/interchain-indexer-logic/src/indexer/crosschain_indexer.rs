@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},

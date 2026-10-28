@@ -152,7 +152,7 @@ async fn import_solidity_multiple(
 
     let from_data_to_active_model = |data: Data| {
         let mut sources = data.sources;
-        for (_path, source_code) in sources.iter_mut() {
+        for source_code in sources.values_mut() {
             *source_code = source_code.replace(0 as char, "");
         }
         solidity_multiples::ActiveModel {

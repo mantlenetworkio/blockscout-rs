@@ -425,6 +425,7 @@ impl ReadService {
             .await
     }
 
+    #[allow(clippy::result_large_err)]
     async fn query_line_chart(
         &self,
         name: String,
@@ -442,7 +443,7 @@ impl ReadService {
                 Status::not_found(format!(
                     "resolution '{}' for line chart '{}' was not found",
                     String::from(resolution),
-                    &name,
+                    name,
                 ))
             })?;
 

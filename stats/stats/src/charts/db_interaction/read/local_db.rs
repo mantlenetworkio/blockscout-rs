@@ -4,7 +4,6 @@
 use crate::{
     ChartError, ChartProperties, MissingDatePolicy,
     charts::{ChartKey, chart::ChartMetadata},
-    data_source::kinds::local_db::parameter_traits::QueryBehaviour,
     missing_date::{fill_and_filter_chart, fit_into_range},
     range::exclusive_range_to_inclusive,
     types::{
@@ -427,7 +426,7 @@ struct SyncInfo {
 ///
 /// In case of inconsistencies or set `force_full`, returns `None`.
 #[instrument(level="info", skip_all, fields(min_indexer_block = observed_min_indexer_block, chart =? ChartProps::key()))]
-pub async fn last_accurate_point<ChartProps, Query>(
+pub async fn last_accurate_point<ChartProps>(
     chart_id: i32,
     observed_min_indexer_block: i64,
     db: &DatabaseConnection,
@@ -438,7 +437,6 @@ pub async fn last_accurate_point<ChartProps, Query>(
 where
     ChartProps: ChartProperties + ?Sized,
     ChartProps::Resolution: Ord + Clone + Debug,
-    Query: QueryBehaviour,
 {
     let row = if force_full {
         tracing::info!("running full update due to force override");
@@ -586,10 +584,7 @@ mod tests {
         Named,
         charts::ResolutionKind,
         counters::TotalBlocks,
-        data_source::{
-            DataSource, UpdateContext, UpdateParameters,
-            kinds::local_db::parameters::DefaultQueryVec,
-        },
+        data_source::{DataSource, UpdateContext, UpdateParameters},
         lines::{AccountsGrowth, ActiveAccounts, NewTxns, TxnsGrowth, TxnsGrowthMonthly},
         tests::{
             init_db::init_db,
@@ -1122,48 +1117,27 @@ mod tests {
         // No missing points
         assert!(chart_id_matches_key(&db, 1, "newTxns", ResolutionKind::Day).await);
         assert_eq!(
-            last_accurate_point::<NewTxns, DefaultQueryVec<NewTxns>>(
-                1,
-                1,
-                &db,
-                false,
-                0,
-                MissingDatePolicy::FillPrevious
-            )
-            .await
-            .unwrap(),
+            last_accurate_point::<NewTxns>(1, 1, &db, false, 0, MissingDatePolicy::FillPrevious)
+                .await
+                .unwrap(),
             Some(DateValue::<String> {
                 timespan: d("2022-11-12"),
                 value: "1350".to_string()
             })
         );
         assert_eq!(
-            last_accurate_point::<NewTxns, DefaultQueryVec<NewTxns>>(
-                1,
-                1,
-                &db,
-                false,
-                1,
-                MissingDatePolicy::FillPrevious
-            )
-            .await
-            .unwrap(),
+            last_accurate_point::<NewTxns>(1, 1, &db, false, 1, MissingDatePolicy::FillPrevious)
+                .await
+                .unwrap(),
             Some(DateValue::<String> {
                 timespan: d("2022-11-11"),
                 value: "1150".to_string()
             })
         );
         assert_eq!(
-            last_accurate_point::<NewTxns, DefaultQueryVec<NewTxns>>(
-                1,
-                1,
-                &db,
-                false,
-                2,
-                MissingDatePolicy::FillPrevious
-            )
-            .await
-            .unwrap(),
+            last_accurate_point::<NewTxns>(1, 1, &db, false, 2, MissingDatePolicy::FillPrevious)
+                .await
+                .unwrap(),
             Some(DateValue::<String> {
                 timespan: d("2022-11-10"),
                 value: "1000".to_string()
@@ -1173,48 +1147,27 @@ mod tests {
         // Missing points
         assert!(chart_id_matches_key(&db, 4, &TxnsGrowth::name(), ResolutionKind::Day).await);
         assert_eq!(
-            last_accurate_point::<TxnsGrowth, DefaultQueryVec<TxnsGrowth>>(
-                4,
-                1,
-                &db,
-                false,
-                0,
-                MissingDatePolicy::FillPrevious
-            )
-            .await
-            .unwrap(),
+            last_accurate_point::<TxnsGrowth>(4, 1, &db, false, 0, MissingDatePolicy::FillPrevious)
+                .await
+                .unwrap(),
             Some(DateValue::<String> {
                 timespan: d("2022-11-30"),
                 value: "1000".to_string()
             })
         );
         assert_eq!(
-            last_accurate_point::<TxnsGrowth, DefaultQueryVec<TxnsGrowth>>(
-                4,
-                1,
-                &db,
-                false,
-                1,
-                MissingDatePolicy::FillPrevious
-            )
-            .await
-            .unwrap(),
+            last_accurate_point::<TxnsGrowth>(4, 1, &db, false, 1, MissingDatePolicy::FillPrevious)
+                .await
+                .unwrap(),
             Some(DateValue::<String> {
                 timespan: d("2022-11-29"),
                 value: "1000".to_string()
             })
         );
         assert_eq!(
-            last_accurate_point::<TxnsGrowth, DefaultQueryVec<TxnsGrowth>>(
-                4,
-                1,
-                &db,
-                false,
-                2,
-                MissingDatePolicy::FillPrevious
-            )
-            .await
-            .unwrap(),
+            last_accurate_point::<TxnsGrowth>(4, 1, &db, false, 2, MissingDatePolicy::FillPrevious)
+                .await
+                .unwrap(),
             Some(DateValue::<String> {
                 timespan: d("2022-11-28"),
                 value: "323".to_string()
@@ -1231,7 +1184,7 @@ mod tests {
 
         assert!(chart_id_matches_key(&db, 5, &TxnsGrowth::name(), ResolutionKind::Month).await);
         assert_eq!(
-            last_accurate_point::<TxnsGrowthMonthly, DefaultQueryVec<TxnsGrowthMonthly>>(
+            last_accurate_point::<TxnsGrowthMonthly>(
                 5,
                 1,
                 &db,
@@ -1247,7 +1200,7 @@ mod tests {
             }),
         );
         assert_eq!(
-            last_accurate_point::<TxnsGrowthMonthly, DefaultQueryVec<TxnsGrowthMonthly>>(
+            last_accurate_point::<TxnsGrowthMonthly>(
                 5,
                 1,
                 &db,
@@ -1263,7 +1216,7 @@ mod tests {
             }),
         );
         assert_eq!(
-            last_accurate_point::<TxnsGrowthMonthly, DefaultQueryVec<TxnsGrowthMonthly>>(
+            last_accurate_point::<TxnsGrowthMonthly>(
                 5,
                 1,
                 &db,
@@ -1290,16 +1243,9 @@ mod tests {
         // No missing points
         assert!(chart_id_matches_key(&db, 1, "activeAccounts", ResolutionKind::Day).await);
         assert_eq!(
-            last_accurate_point::<ActiveAccounts, DefaultQueryVec<ActiveAccounts>>(
-                1,
-                1,
-                &db,
-                false,
-                1,
-                MissingDatePolicy::FillZero
-            )
-            .await
-            .unwrap(),
+            last_accurate_point::<ActiveAccounts>(1, 1, &db, false, 1, MissingDatePolicy::FillZero)
+                .await
+                .unwrap(),
             Some(DateValue::<String> {
                 timespan: d("2022-06-29"),
                 value: "1676".to_string()

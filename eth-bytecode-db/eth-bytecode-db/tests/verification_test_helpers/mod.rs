@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 #![allow(dead_code)]
 
 pub mod test_input_data;

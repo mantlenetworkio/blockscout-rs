@@ -9,6 +9,7 @@
 //!
 //! ## Usage
 //!
+#![allow(clippy::double_must_use)]
 //! You can also check [`data_source` documentation](crate::data_source), tests there, or
 //! the actual usage in `stats-server` crate (`runtime_setup.rs`).
 //!

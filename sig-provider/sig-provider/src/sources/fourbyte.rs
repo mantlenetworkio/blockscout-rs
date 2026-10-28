@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 use crate::SignatureSource;
 use reqwest_middleware::ClientWithMiddleware;
 

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
+
 use super::{compiler_output::SharedCompilerOutput, Error};
 use crate::{
     compiler::DownloadCache, metrics, metrics::GuardedGauge, DetailedVersion, Fetcher, Language,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use futures::{
