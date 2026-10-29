@@ -118,7 +118,7 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
- "serde_with 3.16.0",
+ "serde_with",
  "tonic",
 ]
 
@@ -403,7 +403,7 @@ dependencies = [
  "secp256k1",
  "serde",
  "serde_json",
- "serde_with 3.16.0",
+ "serde_with",
  "thiserror 2.0.9",
 ]
 
@@ -529,7 +529,7 @@ dependencies = [
  "derive_more 2.0.1",
  "either",
  "serde",
- "serde_with 3.16.0",
+ "serde_with",
  "sha2",
  "thiserror 2.0.9",
 ]
@@ -546,7 +546,7 @@ dependencies = [
  "alloy-trie",
  "borsh",
  "serde",
- "serde_with 3.16.0",
+ "serde_with",
 ]
 
 [[package]]
@@ -788,7 +788,7 @@ dependencies = [
  "alloy-primitives",
  "derive_more 2.0.1",
  "serde",
- "serde_with 3.16.0",
+ "serde_with",
 ]
 
 [[package]]
@@ -808,7 +808,7 @@ dependencies = [
  "itertools 0.13.0",
  "serde",
  "serde_json",
- "serde_with 3.16.0",
+ "serde_with",
  "thiserror 2.0.9",
 ]
 
@@ -1597,7 +1597,7 @@ dependencies = [
  "sea-orm-migration",
  "serde",
  "serde_json",
- "serde_with 3.16.0",
+ "serde_with",
  "tokio",
  "tokio-util",
  "tonic",
@@ -2536,7 +2536,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33d852cb9b869c2a9b3df2f71a3074817f01e1844f839a144f5fcef059a4eb5d"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4967,14 +4967,14 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "rustls"
-version = "0.23.20"
+version = "0.23.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5065c3f250cbd332cd894be57c40fa52387247659b14a2d6041d121547903b1b"
+checksum = "47796c98c480fce5406ef69d1c76378375492c3b0a0de587be0c1d9feb12f395"
 dependencies = [
  "once_cell",
  "ring",
@@ -5369,22 +5369,6 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "2.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07ff71d2c147a7b57362cead5e22f772cd52f6ab31cfcd9edcd7f6aeb2a0afbe"
-dependencies = [
- "base64 0.13.1",
- "chrono",
- "hex",
- "indexmap 1.9.3",
- "serde",
- "serde_json",
- "serde_with_macros 2.3.3",
- "time",
-]
-
-[[package]]
-name = "serde_with"
 version = "3.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10574371d41b0d9b2cff89418eda27da52bcaff2cc8741db26382a77c29131f1"
@@ -5398,20 +5382,8 @@ dependencies = [
  "schemars 1.1.0",
  "serde_core",
  "serde_json",
- "serde_with_macros 3.16.0",
+ "serde_with_macros",
  "time",
-]
-
-[[package]]
-name = "serde_with_macros"
-version = "2.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "881b6f881b17d13214e5d494c939ebab463d01264ce1811e9d4ac3a882e7695f"
-dependencies = [
- "darling 0.20.10",
- "proc-macro2",
- "quote",
- "syn 2.0.100",
 ]
 
 [[package]]
@@ -5945,7 +5917,7 @@ dependencies = [
  "fastrand",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6617,7 +6589,7 @@ dependencies = [
  "sea-orm",
  "serde",
  "serde_json",
- "serde_with 3.16.0",
+ "serde_with",
  "thiserror 2.0.9",
  "tokio",
  "tracing",
@@ -6648,7 +6620,7 @@ dependencies = [
  "prost-wkt",
  "prost-wkt-types",
  "serde",
- "serde_with 2.3.3",
+ "serde_with",
  "tonic",
  "tonic-build",
 ]

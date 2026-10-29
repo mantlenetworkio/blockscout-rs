@@ -10,7 +10,7 @@ actix-prost = { version = "0.1.0" }
 actix-prost-macros = { version = "0.1.0" }
 prost = "0.13"
 serde = { version = "1" }
-serde_with = { version = "2.0" }
+serde_with = { version = "3.12" }
 tonic = "0.12"
 
 [build-dependencies]
