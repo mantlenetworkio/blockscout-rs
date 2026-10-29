@@ -26,7 +26,17 @@ where
         // CARGO_MANIFEST_DIR points to interchain-indexer-server/, so we go up one level
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir.parent().unwrap();
-        settings.chains_config = workspace_root.join("config/omnibridge/chains.json");
+        // Chains come from a fixture, not from `config/omnibridge/chains.json`:
+        // the deployment config carries real public RPC endpoints, so on any
+        // machine with egress `run()` starts live indexers that scan Ethereum
+        // and Gnosis mainnet for the duration of the test binary. The fixture
+        // declares the same chains with a dead loopback endpoint, which is the
+        // state these tests were written against ("indexer failed to start")
+        // and which `config_fixture_declares_the_same_chains_offline` pins.
+        //
+        // Bridges still come from the deployment config: it holds no URLs, and
+        // the tests assert on its `started_at_block` values directly.
+        settings.chains_config = manifest_dir.join("tests/fixtures/chains-offline.json");
         settings.bridges_config = workspace_root.join("config/omnibridge/bridges.json");
 
         (settings_setup(settings), base)
@@ -34,4 +44,18 @@ where
 
     test_server::init_server(|| interchain_indexer_server::run(settings), &base).await;
     base
+}
+
+/// Issues a raw GET and returns the HTTP status and JSON body, without the
+/// success-only assertion baked into `test_server::send_get_request`.
+#[allow(dead_code)]
+pub async fn get_raw(base: &Url, route: &str) -> (reqwest::StatusCode, serde_json::Value) {
+    let response = reqwest::Client::new()
+        .get(base.join(route).unwrap())
+        .send()
+        .await
+        .expect("request failed");
+    let status = response.status();
+    let body = response.json().await.expect("body is not JSON");
+    (status, body)
 }

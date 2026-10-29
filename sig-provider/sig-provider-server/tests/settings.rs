@@ -22,3 +22,27 @@ fn base_settings_include_all() {
     let example: toml::Value = toml::from_slice(&example).unwrap();
     assert_eq!(default, example);
 }
+
+#[test]
+fn openchain_is_accepted_as_sigeth() {
+    let settings: Settings = toml::from_str(
+        r#"
+        [sources]
+        openchain = "https://example.com/"
+        "#,
+    )
+    .expect("Failed to parse config");
+    assert_eq!("https://example.com/", settings.sources.sigeth.as_str());
+}
+
+#[test]
+fn openchain_and_sigeth_are_not_accepted_together() {
+    let result = toml::from_str::<Settings>(
+        r#"
+        [sources]
+        openchain = "https://example.com/"
+        sigeth = "https://example.org/"
+        "#,
+    );
+    assert!(result.is_err(), "expected an error, got {result:?}");
+}

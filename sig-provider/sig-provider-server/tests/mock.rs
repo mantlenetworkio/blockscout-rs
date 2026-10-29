@@ -18,10 +18,9 @@ async fn run_server(sources: &SourceMocks<'_>) -> url::Url {
         fourbyte: format!("http://127.0.0.1:{}/", sources.fourbyte.port())
             .parse()
             .unwrap(),
-        openchain: format!("http://127.0.0.1:{}/", sources.openchain.port())
+        sigeth: format!("http://127.0.0.1:{}/", sources.sigeth.port())
             .parse()
             .unwrap(),
-        sigeth: None,
         eth_bytecode_db: EthBytecodeDbSettings {
             enabled: true,
             url: format!("http://127.0.0.1:{}/", sources.eth_bytecode_db.port())
@@ -35,7 +34,7 @@ async fn run_server(sources: &SourceMocks<'_>) -> url::Url {
 
 struct SourceMocks<'a> {
     fourbyte: MockServer,
-    openchain: MockServer,
+    sigeth: MockServer,
     eth_bytecode_db: MockServer,
 
     mocks: RefCell<Vec<Mock<'a>>>,
@@ -45,7 +44,7 @@ impl<'a> SourceMocks<'a> {
     pub fn new() -> Self {
         Self {
             fourbyte: MockServer::start(),
-            openchain: MockServer::start(),
+            sigeth: MockServer::start(),
             eth_bytecode_db: MockServer::start(),
 
             mocks: RefCell::new(Vec::new()),
@@ -59,11 +58,11 @@ impl<'a> SourceMocks<'a> {
         self.mocks.borrow_mut().push(self.fourbyte.mock(config_fn));
     }
 
-    pub fn openchain_mock<F>(&'a self, config_fn: F)
+    pub fn sigeth_mock<F>(&'a self, config_fn: F)
     where
         F: FnOnce(When, Then),
     {
-        self.mocks.borrow_mut().push(self.openchain.mock(config_fn));
+        self.mocks.borrow_mut().push(self.sigeth.mock(config_fn));
     }
 
     pub fn eth_bytecode_db_mock<F>(&'a self, config_fn: F)
@@ -98,6 +97,18 @@ async fn create() {
         then.status(201)
             .header("Content-type", "application/json")
             .json_body(fourbyte_response);
+    });
+
+    let sigeth_request = serde_json::json!({"type":"abi","data":[[{"constant":false,"inputs":[],"name":"f","outputs":[],"type":"function"},{"inputs":[],"type":"constructor"},{"anonymous":false,"inputs":[{"name":"","type":"string","indexed":true}],"name":"E","type":"event"}]]});
+    let sigeth_response = serde_json::json!({"ok":true,"result":{"event":{"imported":{},"duplicated":{"E(string)":"0x3e9992c940c54ea252d3a34557cc3d3014281525c43d694f89d5f3dfd820b07d"},"invalid":null},"function":{"imported":{},"duplicated":{"f()":"0x26121ff0"},"invalid":null}}});
+    mocks.sigeth_mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/signature-database/v1/import")
+            .header("Content-type", "application/json")
+            .json_body(sigeth_request);
+        then.status(200)
+            .header("Content-type", "application/json")
+            .json_body(sigeth_response);
     });
 
     let base = run_server(&mocks).await;
@@ -149,15 +160,15 @@ async fn get_function() {
             .json_body(fourbyte_response);
     });
 
-    let openchain_response = serde_json::json!({"ok":true,"result":{"event":{},"function":{"0x70a08231":[{"name":"passphrase_calculate_transfer(uint64,address)","filtered":true},{"name":"branch_passphrase_public(uint256,bytes8)","filtered":true},{"name":"balanceOf(address)","filtered":false}]}}});
-    mocks.openchain_mock(|when, then| {
+    let sigeth_response = serde_json::json!({"ok":true,"result":{"event":{},"function":{"0x70a08231":[{"name":"passphrase_calculate_transfer(uint64,address)","filtered":true},{"name":"branch_passphrase_public(uint256,bytes8)","filtered":true},{"name":"balanceOf(address)","filtered":false}]}}});
+    mocks.sigeth_mock(|when, then| {
         when.method(httpmock::Method::GET)
             .path("/signature-database/v1/lookup")
             .query_param("function", "0x70a08231")
             .query_param("filter", "false");
         then.status(200)
             .header("Content-type", "application/json")
-            .json_body(openchain_response);
+            .json_body(sigeth_response);
     });
 
     let base = run_server(&mocks).await;
@@ -195,8 +206,8 @@ async fn get_event() {
             .json_body(fourbyte_response);
     });
 
-    let openchain_response = serde_json::json!({"ok":true,"result":{"event":{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef":[{"name":"Transfer(address,address,uint256)","filtered":false}]},"function":{}}});
-    mocks.openchain_mock(|when, then| {
+    let sigeth_response = serde_json::json!({"ok":true,"result":{"event":{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef":[{"name":"Transfer(address,address,uint256)","filtered":false}]},"function":{}}});
+    mocks.sigeth_mock(|when, then| {
         when.method(httpmock::Method::GET)
             .path("/signature-database/v1/lookup")
             .query_param(
@@ -206,7 +217,7 @@ async fn get_event() {
             .query_param("filter", "false");
         then.status(200)
             .header("Content-type", "application/json")
-            .json_body(openchain_response);
+            .json_body(sigeth_response);
     });
 
     let eth_bytecode_db_request = serde_json::json!({"selector": "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"});

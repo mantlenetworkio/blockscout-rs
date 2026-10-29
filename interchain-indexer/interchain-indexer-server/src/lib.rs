@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+mod auth;
 mod config;
+mod env_merge;
 mod indexers;
+mod logging;
 mod proto;
 mod server;
 mod services;

@@ -2,25 +2,29 @@
 
 use std::ops::Range;
 
-use chrono::{DateTime, TimeDelta, Utc};
+use crate::utils::interval_24h;
+use chrono::{DateTime, Utc};
 use sea_orm::{
     ColumnTrait, QueryFilter,
-    sea_query::{Expr, SimpleExpr},
+    sea_query::{Expr, ExprTrait, SimpleExpr},
 };
 
-/// `[filter_24h_until - 24h, filter_24h_until]` (both ends inclusive).
+/// Filter for the 24 hours preceding `filter_24h_until` (both ends inclusive).
 ///
-/// The timestamp expression is compared as-is, so an index on it can be used.
+/// `timestamp_expr` is kept bare on the left-hand side of both comparisons so
+/// that a b-tree index on the underlying column stays usable. The equivalent
+/// `filter_24h_until - column at time zone 'UTC' <= interval '24 hours'` form
+/// wraps the column in an expression, which is not sargable and makes postgres
+/// sequential-scan the whole table.
 pub fn interval_24h_filter(
     timestamp_expr: SimpleExpr,
     filter_24h_until: DateTime<Utc>,
 ) -> SimpleExpr {
-    let filter_24h_since = filter_24h_until
-        .checked_sub_signed(TimeDelta::hours(24))
-        .unwrap_or(DateTime::<Utc>::MIN_UTC);
-    Expr::expr(timestamp_expr.clone())
-        .gte(filter_24h_since)
-        .and(Expr::expr(timestamp_expr).lte(filter_24h_until))
+    let interval = interval_24h(filter_24h_until);
+    timestamp_expr
+        .clone()
+        .gte(Expr::value(*interval.start()))
+        .and(timestamp_expr.lte(Expr::value(*interval.end())))
 }
 
 pub fn datetime_range_filter<Q: QueryFilter, C: ColumnTrait>(

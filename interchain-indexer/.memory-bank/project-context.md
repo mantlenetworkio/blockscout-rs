@@ -39,16 +39,27 @@ current production logic is concentrated in the Avalanche path.
     - `src/indexers.rs`
     - `src/config.rs`
     - `src/settings.rs`
+    - `src/services/bridge_proto.rs` — builds the `Bridge` proto message,
+      including each bridge's `indexed_chain_ids`
 - `interchain-indexer-logic`
   - core indexing logic, message buffer, log streaming, database abstraction,
     chain/token info services, and stats projection
   - primary entrypoints:
     - `src/indexer/crosschain_indexer.rs`
     - `src/indexer/avalanche/mod.rs`
+    - `src/indexer/avalanche/consolidation.rs` — finality/status rules,
+      transfer building (both the `send`-driven and reconstructed builders)
+    - `src/indexer/avalanche/ictt_payload.rs` — ICM payload (`TransferrerMessage`)
+      decode and hop classification
+    - `src/indexer/avalanche/metrics.rs` — Avalanche indexer metrics
     - `src/message_buffer/`
     - `src/log_stream.rs`
     - `src/database.rs`
+    - `src/filters.rs` — `ChainBridgeFilter`, read-side unindexed-chain filter
     - `src/stats/projection.rs`
+    - `src/stats/indexed_chains.rs` — `IndexedChains`, the observability-horizon
+      eligibility predicate shared by projection, backfill, and the read filter
+    - `src/stats/metrics.rs`
 - `interchain-indexer-entity`
   - SeaORM entities generated from the schema, plus manual extensions
 - `interchain-indexer-migration`
@@ -115,7 +126,10 @@ current production logic is concentrated in the Avalanche path.
   - known chains, explorer metadata, RPC providers, and native IDs
 - `config/avalanche/bridges.json`
   - bridges, contracts, enablement, and filtering settings such as
-    `process_unknown_chains` and `home_chain_id`
+    `process_unknown_chains` and `home_chain_id`; also
+    `reconstruct_incoming_ictt_transfers` (default `true`), the per-bridge
+    switch for reconstructing incoming ICTT transfers from the ICM payload
+    when the source chain is unconfigured
 
 ### Runtime Configuration
 
@@ -148,13 +162,21 @@ Common commands from `justfile`:
 - `just generate-entities`
   - regenerate SeaORM codegen into `interchain-indexer-entity/src/codegen`
 - `just run`
-  - start the service against Avalanche config with migrations enabled
+  - start the service against `config/full-mainnet` with migrations enabled
 - `just run-dev`
-  - same as `run`, but loads env vars from `.env`
+  - same as `run`, but with `.env` loaded (`dotenv` CLI). The only recipe that reads
+    `.env` — see the gotcha on why `set dotenv-load` is deliberately not set
 - `just check`
   - `cargo check` + strict clippy
 - `just format`
   - `cargo sort` when available + `cargo fmt`
+- `just graphify-init`
+  - rebuild the local graphify knowledge graph (`graphify-out/`, gitignored — see
+    `.memory-bank/rules/graphify.mdc`); run once after cloning or whenever
+    `graphify-out/graph.json` is missing
+- `just graphify-hooks`
+  - install local git hooks that keep `graphify-out/` refreshed automatically on
+    commit/checkout; one-time per clone
 
 ## Testing Flow
 

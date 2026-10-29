@@ -2,31 +2,37 @@
 
 use crate::{
     BridgeConfig,
-    proto::{interchain_service_server::*, *},
+    // `TokenType` is nested in `TokenInfo` so its value names do not squat the
+    // proto package namespace — see `.memory-bank/rules/rust-style.md`.
+    proto::{interchain_service_server::*, token_info::TokenType, *},
     settings::ApiSettings,
 };
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use interchain_indexer_entity::{
     crosschain_messages::Model as CrosschainMessageModel,
     crosschain_transfers::Model as CrosschainTransferModel,
-    sea_orm_active_enums::MessageStatus as DbMessageStatus, tokens::Model as TokenInfoModel,
+    sea_orm_active_enums::{MessageStatus as DbMessageStatus, TokenType as DbTokenType},
+    tokens::Model as TokenInfoModel,
 };
 use interchain_indexer_logic::{
-    ChainInfoService, InterchainDatabase, JoinedTransfer, TokenInfoService,
+    ChainInfoService, CrosschainMessageLookup, IndexedChains, InterchainDatabase, JoinedTransfer,
+    TokenInfoService,
     pagination::{
         ListMarker, MessagesPaginationLogic, PaginationDirection, TransfersPaginationLogic,
     },
+    protocol_metadata::ProtocolMetadata,
     utils::{hex_string_opt, to_hex_prefixed, vec_from_hex_prefixed},
 };
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tonic::{Request, Response, Status};
 
 use super::{
+    bridge_proto::bridge_model_to_proto,
     chain_info_proto::chain_model_to_proto,
-    utils::{db_datetime_to_string, map_db_error},
+    utils::{
+        build_chain_bridge_filter, checked_bridge_id, db_datetime_to_string, map_db_error,
+        parse_bridge_ids_csv, parse_chain_ids_csv,
+    },
 };
 
 macro_rules! messages_pagination_params {
@@ -144,6 +150,7 @@ pub struct InterchainServiceImpl {
     pub chain_info_service: Arc<ChainInfoService>,
     pub bridges_map: HashMap<i32, BridgeInfo>,
     pub api_settings: ApiSettings,
+    pub indexed_chains: Arc<IndexedChains>,
 }
 
 impl InterchainServiceImpl {
@@ -153,43 +160,50 @@ impl InterchainServiceImpl {
         chain_info_service: Arc<ChainInfoService>,
         bridges: Vec<BridgeConfig>,
         api_settings: ApiSettings,
-    ) -> Self {
-        Self {
+        indexed_chains: Arc<IndexedChains>,
+    ) -> anyhow::Result<Self> {
+        let bridges_map = bridges
+            .into_iter()
+            .map(|b| {
+                let id = u32::try_from(b.bridge_id)
+                    .with_context(|| format!("bridge id {} out of u32 range", b.bridge_id))?;
+                Ok((
+                    b.bridge_id,
+                    BridgeInfo {
+                        name: b.name,
+                        ui_url: b.ui_url,
+                        docs_url: b.docs_url,
+                        id,
+                    },
+                ))
+            })
+            .collect::<anyhow::Result<HashMap<_, _>>>()?;
+
+        Ok(Self {
             db,
             token_info_service,
             chain_info_service,
-            bridges_map: bridges
-                .into_iter()
-                .map(|b| {
-                    (
-                        b.bridge_id,
-                        BridgeInfo {
-                            name: b.name,
-                            ui_url: b.ui_url,
-                            docs_url: b.docs_url,
-                        },
-                    )
-                })
-                .collect(),
+            bridges_map,
             api_settings,
-        }
+            indexed_chains,
+        })
     }
 
     async fn message_model_to_proto(
         &self,
         message: CrosschainMessageModel,
         transfers: Vec<CrosschainTransferModel>,
-    ) -> InterchainMessage {
+    ) -> Result<InterchainMessage, Status> {
         let payload = message
             .payload
             .as_ref()
             .map(|payload| to_hex_prefixed(payload.as_slice()));
 
-        let transfers = futures::future::join_all(transfers.into_iter().map(|transfer| {
+        let transfers = futures::future::try_join_all(transfers.into_iter().map(|transfer| {
             let message = message.clone();
             async move { self.transfer_logic_to_proto(&transfer, &message).await }
         }))
-        .await;
+        .await?;
 
         let source_chain = self.get_chain_info(message.src_chain_id).await.into();
         let destination_chain = match message.dst_chain_id {
@@ -197,8 +211,25 @@ impl InterchainServiceImpl {
             None => None,
         };
 
-        InterchainMessage {
-            bridge: self.get_bridge_info(message.bridge_id).into(),
+        let has_unindexed_chain = self.indexed_chains.message_has_unindexed(
+            message.bridge_id,
+            message.src_chain_id,
+            message.dst_chain_id,
+        );
+
+        // `extra` stays a present-but-empty object for a healthy message, as it
+        // has always been; only the namespaces a row actually carries appear
+        // inside it. A `Struct` never fails to build from a JSON object, so the
+        // fallback is the same empty object rather than a dropped field.
+        let extra = ProtocolMetadata::from_json_value(message.protocol_metadata.clone())
+            .map(|metadata| metadata.render_extra())
+            .unwrap_or_default();
+        let extra = Some(prost_wkt_types::Struct {
+            fields: serde_json::from_value(serde_json::Value::Object(extra)).unwrap_or_default(),
+        });
+
+        Ok(InterchainMessage {
+            bridge: self.get_bridge_info(message.bridge_id)?.into(),
             message_id: self.get_message_id_from_message(&message),
             status: message_status_to_proto(&message.status) as i32,
             source_chain,
@@ -210,109 +241,129 @@ impl InterchainServiceImpl {
             receive_timestamp: message.last_update_timestamp.map(db_datetime_to_string),
             destination_transaction_hash: hex_string_opt(message.dst_tx_hash),
             payload,
-            extra: BTreeMap::new(),
+            extra,
             transfers,
-        }
+            has_unindexed_chain,
+        })
     }
 
     async fn messages_logic_to_proto(
         &self,
         messages: Vec<(CrosschainMessageModel, Vec<CrosschainTransferModel>)>,
-    ) -> Vec<InterchainMessage> {
+    ) -> Result<Vec<InterchainMessage>, Status> {
         let futures = messages.into_iter().map(|(message, transfers)| async move {
             self.message_model_to_proto(message, transfers).await
         });
 
-        futures::future::join_all(futures).await
+        futures::future::try_join_all(futures).await
     }
 
     async fn joined_transfers_logic_to_proto(
         &self,
         transfers: Vec<JoinedTransfer>,
-    ) -> Vec<InterchainTransfer> {
+    ) -> Result<Vec<InterchainTransfer>, Status> {
         let futures = transfers
             .into_iter()
             .map(|t| async move { self.joined_transfer_logic_to_proto(&t).await });
 
-        futures::future::join_all(futures).await
+        futures::future::try_join_all(futures).await
     }
 
     async fn transfer_logic_to_proto(
         &self,
         transfer: &CrosschainTransferModel,
         message: &CrosschainMessageModel,
-    ) -> InterchainTransfer {
-        InterchainTransfer {
-            bridge: self.get_bridge_info(message.bridge_id).into(),
+    ) -> Result<InterchainTransfer, Status> {
+        let has_unindexed_chain = self.indexed_chains.transfer_has_unindexed(
+            message.bridge_id,
+            transfer.token_src_chain_id,
+            transfer.token_dst_chain_id,
+        );
+
+        Ok(InterchainTransfer {
+            bridge: self.get_bridge_info(message.bridge_id)?.into(),
             message_id: self.get_message_id_from_message(message),
             status: message_status_to_proto(&message.status) as i32,
             source_chain: Some(self.get_chain_info(transfer.token_src_chain_id).await),
             destination_chain: Some(self.get_chain_info(transfer.token_dst_chain_id).await),
             source_token: self
-                .get_token_info(
+                .get_token_info_opt(
                     transfer.token_src_chain_id,
                     transfer.token_src_address.clone(),
                 )
                 .await,
-            source_amount: Some(transfer.src_amount.to_plain_string()),
+            source_amount: transfer.src_amount.as_ref().map(|a| a.to_plain_string()),
             source_transaction_hash: hex_string_opt(message.src_tx_hash.clone()),
             sender: self.get_address_info_opt(transfer.sender_address.clone()),
             send_timestamp: db_datetime_to_string(message.init_timestamp),
             destination_token: self
-                .get_token_info(
+                .get_token_info_opt(
                     transfer.token_dst_chain_id,
                     transfer.token_dst_address.clone(),
                 )
                 .await,
-            destination_amount: Some(transfer.dst_amount.to_plain_string()),
+            destination_amount: transfer.dst_amount.as_ref().map(|a| a.to_plain_string()),
             destination_transaction_hash: hex_string_opt(message.dst_tx_hash.clone()),
             recipient: self.get_address_info_opt(transfer.recipient_address.clone()),
             receive_timestamp: message.last_update_timestamp.map(db_datetime_to_string),
-        }
+            has_unindexed_chain,
+        })
     }
 
     async fn joined_transfer_logic_to_proto(
         &self,
         transfer: &JoinedTransfer,
-    ) -> InterchainTransfer {
-        InterchainTransfer {
-            bridge: self.get_bridge_info(transfer.bridge_id).into(),
+    ) -> Result<InterchainTransfer, Status> {
+        let has_unindexed_chain = self.indexed_chains.transfer_has_unindexed(
+            transfer.bridge_id,
+            transfer.token_src_chain_id,
+            transfer.token_dst_chain_id,
+        );
+
+        Ok(InterchainTransfer {
+            bridge: self.get_bridge_info(transfer.bridge_id)?.into(),
             message_id: self.get_message_id_from_joined_transfer(transfer),
             status: message_status_to_proto(&transfer.status) as i32,
             source_chain: Some(self.get_chain_info(transfer.token_src_chain_id).await),
             destination_chain: Some(self.get_chain_info(transfer.token_dst_chain_id).await),
             source_token: self
-                .get_token_info(
+                .get_token_info_opt(
                     transfer.token_src_chain_id,
                     transfer.token_src_address.clone(),
                 )
                 .await,
-            source_amount: Some(transfer.src_amount.to_plain_string()),
+            source_amount: transfer.src_amount.as_ref().map(|a| a.to_plain_string()),
             source_transaction_hash: hex_string_opt(transfer.src_tx_hash.clone()),
             sender: self.get_address_info_opt(transfer.sender_address.clone()),
             send_timestamp: db_datetime_to_string(transfer.init_timestamp),
             destination_token: self
-                .get_token_info(
+                .get_token_info_opt(
                     transfer.token_dst_chain_id,
                     transfer.token_dst_address.clone(),
                 )
                 .await,
-            destination_amount: Some(transfer.dst_amount.to_plain_string()),
+            destination_amount: transfer.dst_amount.as_ref().map(|a| a.to_plain_string()),
             destination_transaction_hash: hex_string_opt(transfer.dst_tx_hash.clone()),
             recipient: self.get_address_info_opt(transfer.recipient_address.clone()),
             receive_timestamp: transfer.last_update_timestamp.map(db_datetime_to_string),
-        }
+            has_unindexed_chain,
+        })
     }
 
-    fn get_bridge_info(&self, bridge_id: i32) -> BridgeInfo {
-        self.bridges_map
-            .get(&bridge_id)
-            .cloned()
-            .unwrap_or(BridgeInfo {
-                name: "Unknown".to_string(),
-                ui_url: None,
-                docs_url: None,
-            })
+    fn get_bridge_info(&self, bridge_id: i32) -> Result<BridgeInfo, Status> {
+        match self.bridges_map.get(&bridge_id).cloned() {
+            Some(info) => Ok(info),
+            None => {
+                let id = u32::try_from(bridge_id)
+                    .map_err(|_| map_db_error(anyhow!("bridge id out of range")))?;
+                Ok(BridgeInfo {
+                    name: "Unknown".to_string(),
+                    ui_url: None,
+                    docs_url: None,
+                    id,
+                })
+            }
+        }
     }
 
     fn get_message_id_from_message(&self, message: &CrosschainMessageModel) -> String {
@@ -331,8 +382,22 @@ impl InterchainServiceImpl {
             .unwrap_or_else(|| format!("0x{:x}", joined.message_id))
     }
 
+    /// Token info for an optional token address: `None` when the transfer side's
+    /// token is unknown (the corresponding bridge event has not been observed).
+    async fn get_token_info_opt(
+        &self,
+        chain_id: i64,
+        address: Option<Vec<u8>>,
+    ) -> Option<TokenInfo> {
+        match address {
+            Some(address) => self.get_token_info(chain_id, address).await,
+            None => None,
+        }
+    }
+
     async fn get_token_info(&self, chain_id: i64, address: Vec<u8>) -> Option<TokenInfo> {
         let address_hex = to_hex_prefixed(address.as_slice());
+        let fallback_type = token_type_to_proto(&DbTokenType::from_address(&address));
         self.token_info_service
             .clone()
             .get_token_info(chain_id, address)
@@ -341,13 +406,17 @@ impl InterchainServiceImpl {
             .ok()
             .map(token_info_logic_to_proto)
             .unwrap_or_else(|| {
-                // void TokenInfo (at least store address and chain id)
+                // void TokenInfo (at least store address and chain id) --
+                // still omitting address_hash for a native side, so a lookup
+                // failure never leaks the sentinel to the API.
                 TokenInfo {
-                    address_hash: address_hex.clone(),
+                    address_hash: (fallback_type != TokenType::Native)
+                        .then(|| address_hex.clone()),
                     name: None,
                     symbol: None,
                     decimals: None,
                     icon_url: None,
+                    r#type: fallback_type as i32,
                 }
             })
             .into()
@@ -371,16 +440,33 @@ impl InterchainService for InterchainServiceImpl {
         &self,
         request: Request<GetMessagesRequest>,
     ) -> Result<Response<GetMessagesResponse>, Status> {
-        let (_inner, input_pagination, page_size, is_last_page) =
+        let (inner, input_pagination, page_size, is_last_page) =
             messages_pagination_params!(self, request)?;
+
+        let filter = build_chain_bridge_filter(
+            inner.home_chain_id,
+            inner.counterparty_chain_ids.as_deref(),
+            inner.src_chain_ids.as_deref(),
+            inner.dst_chain_ids.as_deref(),
+            inner.bridge_ids.as_deref(),
+            self.indexed_chains.as_ref(),
+            inner.include_unindexed_chains.unwrap_or(false),
+        )?;
 
         let (items, output_pagination) = self
             .db
-            .get_crosschain_messages(None, None, page_size, is_last_page, input_pagination)
+            .get_crosschain_messages(
+                None,
+                None,
+                filter,
+                page_size,
+                is_last_page,
+                input_pagination,
+            )
             .await
             .map_err(map_db_error)?;
 
-        let items = self.messages_logic_to_proto(items).await;
+        let items = self.messages_logic_to_proto(items).await?;
 
         let response = GetMessagesResponse {
             items,
@@ -399,18 +485,29 @@ impl InterchainService for InterchainServiceImpl {
         request: Request<GetMessageDetailsRequest>,
     ) -> Result<Response<InterchainMessage>, Status> {
         let inner = request.into_inner();
+        let message_id = vec_from_hex_prefixed(&inner.message_id).map_err(|_| {
+            Status::invalid_argument("invalid message_id: expected a 0x-prefixed hex string")
+        })?;
+        let bridge_id = checked_bridge_id(inner.bridge_id)?;
+
         let response = match self
             .db
-            .get_crosschain_message(vec_from_hex_prefixed(&inner.message_id).map_err(map_db_error)?)
+            .get_crosschain_message(message_id, bridge_id)
             .await
+            .map_err(map_db_error)?
         {
-            Ok(Some((message, transfers))) => {
-                let message = self.message_model_to_proto(message, transfers).await;
-                Ok(message)
+            CrosschainMessageLookup::Found(message, transfers) => {
+                self.message_model_to_proto(message, transfers).await?
             }
-            Ok(None) => Err(tonic::Status::not_found("Message not found")),
-            Err(e) => Err(map_db_error(e)),
-        }?;
+            CrosschainMessageLookup::NotFound => {
+                return Err(Status::not_found("Message not found"));
+            }
+            CrosschainMessageLookup::Ambiguous => {
+                return Err(Status::failed_precondition(
+                    "Message ID matches multiple bridges; provide bridge_id",
+                ));
+            }
+        };
 
         Ok(Response::new(response))
     }
@@ -422,13 +519,26 @@ impl InterchainService for InterchainServiceImpl {
         let (inner, input_pagination, page_size, is_last_page) =
             messages_pagination_params!(self, request)?;
 
-        let tx_hash = vec_from_hex_prefixed(&inner.tx_hash).map_err(map_db_error)?;
+        let tx_hash = vec_from_hex_prefixed(&inner.tx_hash).map_err(|_| {
+            Status::invalid_argument("invalid tx_hash: expected a 0x-prefixed hex string")
+        })?;
+
+        let filter = build_chain_bridge_filter(
+            inner.home_chain_id,
+            inner.counterparty_chain_ids.as_deref(),
+            inner.src_chain_ids.as_deref(),
+            inner.dst_chain_ids.as_deref(),
+            inner.bridge_ids.as_deref(),
+            self.indexed_chains.as_ref(),
+            inner.include_unindexed_chains.unwrap_or(false),
+        )?;
 
         let (items, output_pagination) = self
             .db
             .get_crosschain_messages(
                 Some(tx_hash),
                 None,
+                filter,
                 page_size,
                 is_last_page,
                 input_pagination,
@@ -436,7 +546,7 @@ impl InterchainService for InterchainServiceImpl {
             .await
             .map_err(map_db_error)?;
 
-        let items = self.messages_logic_to_proto(items).await;
+        let items = self.messages_logic_to_proto(items).await?;
 
         let response = GetMessagesResponse {
             items,
@@ -457,13 +567,26 @@ impl InterchainService for InterchainServiceImpl {
         let (inner, input_pagination, page_size, is_last_page) =
             messages_pagination_params!(self, request)?;
 
-        let address = vec_from_hex_prefixed(&inner.address).map_err(map_db_error)?;
+        let address = vec_from_hex_prefixed(&inner.address).map_err(|_| {
+            Status::invalid_argument("invalid address: expected a 0x-prefixed hex string")
+        })?;
+
+        let filter = build_chain_bridge_filter(
+            inner.home_chain_id,
+            inner.counterparty_chain_ids.as_deref(),
+            inner.src_chain_ids.as_deref(),
+            inner.dst_chain_ids.as_deref(),
+            inner.bridge_ids.as_deref(),
+            self.indexed_chains.as_ref(),
+            inner.include_unindexed_chains.unwrap_or(false),
+        )?;
 
         let (items, output_pagination) = self
             .db
             .get_crosschain_messages(
                 None,
                 Some(address),
+                filter,
                 page_size,
                 is_last_page,
                 input_pagination,
@@ -471,7 +594,7 @@ impl InterchainService for InterchainServiceImpl {
             .await
             .map_err(map_db_error)?;
 
-        let items = self.messages_logic_to_proto(items).await;
+        let items = self.messages_logic_to_proto(items).await?;
 
         let response = GetMessagesResponse {
             items,
@@ -489,16 +612,33 @@ impl InterchainService for InterchainServiceImpl {
         &self,
         request: Request<GetTransfersRequest>,
     ) -> Result<Response<GetTransfersResponse>, Status> {
-        let (_inner, input_pagination, page_size, is_last_page) =
+        let (inner, input_pagination, page_size, is_last_page) =
             transfers_pagination_params!(self, request)?;
+
+        let filter = build_chain_bridge_filter(
+            inner.home_chain_id,
+            inner.counterparty_chain_ids.as_deref(),
+            inner.src_chain_ids.as_deref(),
+            inner.dst_chain_ids.as_deref(),
+            inner.bridge_ids.as_deref(),
+            self.indexed_chains.as_ref(),
+            inner.include_unindexed_chains.unwrap_or(false),
+        )?;
 
         let (items, output_pagination) = self
             .db
-            .get_crosschain_transfers(None, None, page_size, is_last_page, input_pagination)
+            .get_crosschain_transfers(
+                None,
+                None,
+                filter,
+                page_size,
+                is_last_page,
+                input_pagination,
+            )
             .await
             .map_err(map_db_error)?;
 
-        let items = self.joined_transfers_logic_to_proto(items).await;
+        let items = self.joined_transfers_logic_to_proto(items).await?;
 
         let response = GetTransfersResponse {
             items,
@@ -519,13 +659,26 @@ impl InterchainService for InterchainServiceImpl {
         let (inner, input_pagination, page_size, is_last_page) =
             transfers_pagination_params!(self, request)?;
 
-        let tx_hash = vec_from_hex_prefixed(&inner.tx_hash).map_err(map_db_error)?;
+        let tx_hash = vec_from_hex_prefixed(&inner.tx_hash).map_err(|_| {
+            Status::invalid_argument("invalid tx_hash: expected a 0x-prefixed hex string")
+        })?;
+
+        let filter = build_chain_bridge_filter(
+            inner.home_chain_id,
+            inner.counterparty_chain_ids.as_deref(),
+            inner.src_chain_ids.as_deref(),
+            inner.dst_chain_ids.as_deref(),
+            inner.bridge_ids.as_deref(),
+            self.indexed_chains.as_ref(),
+            inner.include_unindexed_chains.unwrap_or(false),
+        )?;
 
         let (items, output_pagination) = self
             .db
             .get_crosschain_transfers(
                 Some(tx_hash),
                 None,
+                filter,
                 page_size,
                 is_last_page,
                 input_pagination,
@@ -533,7 +686,7 @@ impl InterchainService for InterchainServiceImpl {
             .await
             .map_err(map_db_error)?;
 
-        let items = self.joined_transfers_logic_to_proto(items).await;
+        let items = self.joined_transfers_logic_to_proto(items).await?;
 
         let response = GetTransfersResponse {
             items,
@@ -554,13 +707,26 @@ impl InterchainService for InterchainServiceImpl {
         let (inner, input_pagination, page_size, is_last_page) =
             transfers_pagination_params!(self, request)?;
 
-        let address = vec_from_hex_prefixed(&inner.address).map_err(map_db_error)?;
+        let address = vec_from_hex_prefixed(&inner.address).map_err(|_| {
+            Status::invalid_argument("invalid address: expected a 0x-prefixed hex string")
+        })?;
+
+        let filter = build_chain_bridge_filter(
+            inner.home_chain_id,
+            inner.counterparty_chain_ids.as_deref(),
+            inner.src_chain_ids.as_deref(),
+            inner.dst_chain_ids.as_deref(),
+            inner.bridge_ids.as_deref(),
+            self.indexed_chains.as_ref(),
+            inner.include_unindexed_chains.unwrap_or(false),
+        )?;
 
         let (items, output_pagination) = self
             .db
             .get_crosschain_transfers(
                 None,
                 Some(address),
+                filter,
                 page_size,
                 is_last_page,
                 input_pagination,
@@ -568,7 +734,7 @@ impl InterchainService for InterchainServiceImpl {
             .await
             .map_err(map_db_error)?;
 
-        let items = self.joined_transfers_logic_to_proto(items).await;
+        let items = self.joined_transfers_logic_to_proto(items).await?;
 
         let response = GetTransfersResponse {
             items,
@@ -584,15 +750,76 @@ impl InterchainService for InterchainServiceImpl {
 
     async fn get_chains(
         &self,
-        _request: Request<GetChainsRequest>,
+        request: Request<GetChainsRequest>,
     ) -> Result<Response<GetChainsResponse>, Status> {
+        let inner = request.into_inner();
+        let chain_ids = parse_chain_ids_csv("chain_ids", inner.chain_ids.as_deref())?;
+        let mut bridge_ids = parse_bridge_ids_csv(inner.bridge_ids.as_deref())?;
+        bridge_ids.sort_unstable();
+        bridge_ids.dedup();
+
+        // Chains the selected bridges index today. Only meaningful (and only
+        // computed) for a non-empty selection: `selected_configured_union`
+        // returns a bare `Vec` where empty means "no candidates", the OPPOSITE
+        // of `configured_union()`'s "restrict nothing". Gate on the parsed
+        // request value, never on the union's emptiness, or `?bridge_ids=999`
+        // would return the whole directory.
+        let selected_configured_chain_ids = if bridge_ids.is_empty() {
+            None
+        } else {
+            Some(self.indexed_chains.selected_configured_union(&bridge_ids))
+        };
+
         let models = self
             .chain_info_service
             .get_all_chains_info()
             .await
             .map_err(map_db_error)?;
+
+        let models: Vec<_> = models
+            .into_iter()
+            .filter(|m| chain_ids.is_empty() || chain_ids.contains(&m.id))
+            .filter(|m| {
+                selected_configured_chain_ids
+                    .as_ref()
+                    .is_none_or(|selected| selected.contains(&m.id))
+            })
+            .collect();
+
+        // The unindexed gate stays last and global: it means "no configured
+        // bridge indexes this chain", never "not indexed by the selected
+        // bridges". Under a non-empty `bridge_ids` it is currently a no-op
+        // (`selected_configured_union ⊆ configured_union`), but that
+        // containment is a property of the current derivation, not a guarantee.
+        let models = if inner.include_unindexed_chains.unwrap_or(false) {
+            models
+        } else {
+            match self.indexed_chains.configured_union() {
+                // An empty union can only mean no bridge is configured at all;
+                // emptying the chain directory in that case would be exactly the
+                // retroactive reinterpretation ADR-004 Decision 5 forbids.
+                Some(union) if !union.is_empty() => models
+                    .into_iter()
+                    .filter(|m| union.contains(&m.id))
+                    .collect(),
+                _ => models,
+            }
+        };
+
         let items = models.into_iter().map(chain_model_to_proto).collect();
         Ok(Response::new(GetChainsResponse { items }))
+    }
+
+    async fn get_bridges(
+        &self,
+        _request: Request<GetBridgesRequest>,
+    ) -> Result<Response<GetBridgesResponse>, Status> {
+        let rows = self.db.get_all_bridges().await.map_err(map_db_error)?;
+        let items = rows
+            .into_iter()
+            .map(|m| bridge_model_to_proto(m, &self.indexed_chains))
+            .collect::<Result<Vec<_>, Status>>()?;
+        Ok(Response::new(GetBridgesResponse { items }))
     }
 }
 
@@ -601,15 +828,64 @@ fn message_status_to_proto(status: &DbMessageStatus) -> MessageStatus {
         DbMessageStatus::Initiated => MessageStatus::MessageStatusInitiated,
         DbMessageStatus::Completed => MessageStatus::MessageStatusCompleted,
         DbMessageStatus::Failed => MessageStatus::MessageStatusFailed,
+        DbMessageStatus::ReadyToClaim => MessageStatus::MessageStatusReadyToClaim,
+    }
+}
+
+pub(super) fn token_type_to_proto(token_type: &DbTokenType) -> TokenType {
+    match token_type {
+        DbTokenType::Erc20 => TokenType::Erc20,
+        DbTokenType::Native => TokenType::Native,
+        DbTokenType::Erc721 => TokenType::Erc721,
+        DbTokenType::Erc1155 => TokenType::Erc1155,
     }
 }
 
 fn token_info_logic_to_proto(model: TokenInfoModel) -> TokenInfo {
+    let token_type = token_type_to_proto(&model.r#type);
     TokenInfo {
-        address_hash: to_hex_prefixed(model.address.as_slice()),
+        // Omitted exactly for a native side: the frontend must not render
+        // the internal zero-address sentinel as if it were a real contract.
+        address_hash: (token_type != TokenType::Native)
+            .then(|| to_hex_prefixed(model.address.as_slice())),
         name: model.name,
         symbol: model.symbol,
         decimals: model.decimals.map(|d| d.to_string()),
         icon_url: model.token_icon,
+        r#type: token_type as i32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token_model(address: &[u8], token_type: DbTokenType) -> TokenInfoModel {
+        TokenInfoModel {
+            chain_id: 100,
+            address: address.to_vec(),
+            r#type: token_type,
+            symbol: Some("xDAI".to_string()),
+            name: Some("xDai".to_string()),
+            token_icon: None,
+            decimals: Some(18),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn token_info_logic_to_proto_omits_address_hash_exactly_for_native() {
+        let native = token_info_logic_to_proto(token_model(&[0u8; 20], DbTokenType::Native));
+        assert_eq!(native.address_hash, None);
+        // The frontend still needs these to render an amount for a native side.
+        assert_eq!(native.name, Some("xDai".to_string()));
+        assert_eq!(native.symbol, Some("xDAI".to_string()));
+        assert_eq!(native.decimals, Some("18".to_string()));
+        assert_eq!(native.r#type, TokenType::Native as i32);
+
+        let erc20 = token_info_logic_to_proto(token_model(&[1u8; 20], DbTokenType::Erc20));
+        assert!(erc20.address_hash.is_some());
+        assert_eq!(erc20.r#type, TokenType::Erc20 as i32);
     }
 }

@@ -10,6 +10,7 @@ use crate::{
     },
     types::{BytecodeTypeWrapper, EventDescriptionWrapper, SourceWrapper, VerifyResponseWrapper},
 };
+use alloy_primitives::B256;
 use amplify::Wrapper;
 use async_trait::async_trait;
 use blockscout_display_bytes::Bytes as DisplayBytes;
@@ -19,7 +20,6 @@ use eth_bytecode_db::{
     verification,
     verification::sourcify_from_etherscan,
 };
-use ethers::types::H256;
 use std::{str::FromStr, sync::Arc};
 use tracing::instrument;
 
@@ -220,7 +220,7 @@ impl Database for DatabaseService {
         request: tonic::Request<SearchEventDescriptionsRequest>,
     ) -> Result<tonic::Response<SearchEventDescriptionsResponse>, tonic::Status> {
         let request = request.into_inner();
-        let selector = H256::from_str(&request.selector).map_err(|err| {
+        let selector = B256::from_str(&request.selector).map_err(|err| {
             tonic::Status::invalid_argument(format!("selector is not valid: {err}"))
         })?;
 
@@ -247,7 +247,7 @@ impl Database for DatabaseService {
             .into_iter()
             .take(BATCH_LIMIT)
             .map(|selector| {
-                H256::from_str(&selector).map_err(|err| {
+                B256::from_str(&selector).map_err(|err| {
                     tonic::Status::invalid_argument(format!("selector is not valid: {err}"))
                 })
             })
@@ -326,7 +326,7 @@ impl DatabaseService {
 
         let sourcify_result = self
             .sourcify_client
-            .get_source_files_any(chain_id, contract_address)
+            .get_contract_v2(chain_id, contract_address)
             .await
             .map_err(process_sourcify_error);
 
@@ -385,6 +385,13 @@ fn process_sourcify_error(
             ))
         }
         sourcify::Error::Sourcify(sourcify::SourcifyError::InternalServerError(_)) => {
+            tracing::error!(target: "sourcify", "{error}");
+            Some(tonic::Status::internal("sourcify responded with error"))
+        }
+        // A plain contract lookup never runs a verification job, so this
+        // terminal-outcome variant is not expected here; treat it defensively as
+        // a server-side error.
+        sourcify::Error::Sourcify(sourcify::SourcifyError::VerificationFailure(_)) => {
             tracing::error!(target: "sourcify", "{error}");
             Some(tonic::Status::internal("sourcify responded with error"))
         }
