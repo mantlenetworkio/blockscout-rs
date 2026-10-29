@@ -1,0 +1,91 @@
+use std::{sync::Arc, time::Duration};
+
+use alloy::{
+    network::Ethereum,
+    providers::{DynProvider, Provider},
+    rpc::types::Filter,
+};
+use anyhow::{Context, Result};
+use futures::{StreamExt, stream::BoxStream};
+
+use crate::{
+    InterchainDatabase,
+    log_stream::{LogBatch, LogStream},
+};
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_log_stream_for_chain(
+    provider: DynProvider<Ethereum>,
+    chain_id: i64,
+    bridge_id: i32,
+    filter: Filter,
+    start_block: u64,
+    db: &InterchainDatabase,
+    poll_interval: Duration,
+    batch_size: u64,
+) -> Result<BoxStream<'static, (i64, LogBatch)>> {
+    let checkpoint = db.get_checkpoint(bridge_id as u64, chain_id as u64).await?;
+
+    let (realtime_cursor, catchup_cursor) = if let Some(cp) = checkpoint {
+        let realtime_cursor = cp.validated_realtime_cursor();
+        let catchup_cursor = cp.validated_catchup_cursor();
+
+        tracing::info!(
+            bridge_id,
+            chain_id,
+            realtime_cursor,
+            catchup_cursor,
+            "restored EVM indexer checkpoint"
+        );
+
+        (realtime_cursor, catchup_cursor)
+    } else {
+        let latest_block = provider
+            .get_block_number()
+            .await
+            .with_context(|| format!("failed to fetch latest block for chain {chain_id}"))?;
+        (latest_block, latest_block.saturating_sub(1))
+    };
+
+    // Seed / heal the durable scan floor for this pair. A failed write is a
+    // `warn`, never a startup blocker: the read-side guard in
+    // `CatchupProgress::compute` makes the stored floor cosmetic for the
+    // correctness of the reported numbers, and progress reporting must not
+    // be able to break ingestion.
+    if let Err(err) = db
+        .seed_catchup_floor(
+            bridge_id,
+            chain_id,
+            start_block,
+            catchup_cursor,
+            realtime_cursor,
+        )
+        .await
+    {
+        tracing::warn!(
+            err = ?err,
+            bridge_id,
+            chain_id,
+            start_block,
+            "failed to seed catchup floor; progress reporting may understate this pair"
+        );
+    }
+
+    tracing::info!(bridge_id, chain_id, "configured EVM log stream");
+
+    Ok(LogStream::builder(provider)
+        .filter(filter)
+        .poll_interval(poll_interval)
+        .batch_size(batch_size)
+        .genesis_block(start_block)
+        .realtime_cursor(realtime_cursor)
+        .catchup_cursor(catchup_cursor)
+        .bridge_id(bridge_id)
+        .chain_id(chain_id)
+        .db(Arc::new(db.clone()))
+        .catchup()
+        .realtime()
+        .build()?
+        .map(move |batch| (chain_id, batch))
+        .boxed())
+}

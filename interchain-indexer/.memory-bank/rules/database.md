@@ -48,6 +48,46 @@ for batch in items.chunks(batch_size) {
 
 Use `batched_upsert()` or `run_in_batches()` from `bulk.rs`.
 
+### Two different ceilings: flat statements vs. row-valued `IN`
+
+The `PG_BIND_PARAM_LIMIT / columns_per_row` rule above is correct **only for
+flat statements** — it does not generalize to every shape that looks like a
+batching problem. There are two independent ceilings, and confusing them is
+exactly how a production incident happened (see
+`.memory-bank/research/stats-projection-unbatched-pks-lookup-crash.md`).
+
+- **Flat statements** — `INSERT ... VALUES`, single-column `is_in()`.
+  PostgreSQL folds these into a flat `ScalarArrayOpExpr`, so sizing by bind
+  count is correct. Use `batched_upsert()` / `run_in_batches()`. **But count
+  *all* binds carried by the statement, not just the id list** —
+  `col_expr(...add(1))`, `Expr::value(x)`, and filter constants each consume
+  one bind too, so `run_in_batches(&ids, 1, …)` on a statement with any other
+  bound value overflows before the id list alone would. `stats/projection.rs`
+  had exactly this bug at four `run_in_batches(&ids, 1, …)` sites carrying
+  `SrcStatsAssetId`/`DstStatsAssetId` values beyond the id list; the fix was
+  `run_in_batches(&ids, 4, …)`, not `1`.
+- **Row-valued `IN`** — `(a, b) IN ((...),(...))`, e.g. SeaORM's
+  `Expr::tuple([...]).in_tuples(...)`. PostgreSQL expands this into an
+  `OR`-tree of row comparisons and recurses over it while parsing and
+  planning, so the real ceiling is `max_stack_depth`, **not** the bind-param
+  count — and no bind arithmetic can express it.
+  `PG_BIND_PARAM_LIMIT / columns_per_row` is **bind-safe but not stack-safe**:
+  32 767 tuples in a 2-column row-`IN` is exactly the shape that overflowed a
+  production planner stack while using barely half the bind budget. Use
+  `bulk::ROW_IN_KEY_CHUNK` (a fixed, margin-justified constant — not derived
+  from `PG_BIND_PARAM_LIMIT`) and `bulk::run_in_chunks()` for the write side;
+  hand-roll a `for batch in keys.chunks(chunk) { ...; results.extend(...) }`
+  read-accumulator loop for the read side (`run_in_batches`'s closure cannot
+  lend out a mutable accumulator). This applies equally to `SELECT`,
+  `UPDATE`, and `DELETE` row-valued `IN` statements — chunk the **load**,
+  never the aggregation that runs on top of it, when the query result feeds a
+  cross-row aggregation (see `stats/projection.rs`'s
+  `project_messages_batch` / `project_transfers_batch` for the
+  concatenate-then-aggregate pattern this requires).
+
+Never "simplify" a row-valued `IN` back to `PG_BIND_PARAM_LIMIT / width` —
+that is bind arithmetic solving the wrong ceiling.
+
 ## Entity Generation
 
 - Auto-generated entities go in `interchain-indexer-entity/src/codegen/`
@@ -63,6 +103,10 @@ Use `batched_upsert()` or `run_in_batches()` from `bulk.rs`.
 - Create new migrations with `just new-migration <name>`
 - Use `from_sql()` helper for raw SQL when needed
 - Test migrations with `just migrate-fresh`
+- Base backfills on kinds supported by deployed indexers and known production
+  data, not every value reserved in an enum. Before the xDai migration,
+  production transfers are ERC-20 only; ERC-721/ERC-1155 ingestion is unsupported.
+  Do not scan `crosschain_transfers` to recover hypothetical NFT classifications.
 
 ## Type Conversions
 
@@ -94,8 +138,58 @@ impl From<Config> for entity::ActiveModel {
 - Cursor marker fields must exactly match the SQL `ORDER BY` + tie-breaker fields
 - Marker decode/encode order must be stable and deterministic across pages
 
+## Protocol Metadata
+
+Per [ADR-010](../adr/010-unresolved-avalanche-destinations-and-protocol-metadata.md),
+the planned `crosschain_messages.protocol_metadata` column and its surrounding
+types must be reusable across indexers. Use a shared extensible representation
+with typed protocol-specific payloads and explicit Read API `extra` rendering.
+In the selected destination-resolution use case, successfully resolved
+messages keep SQL NULL, not an empty JSON object, JSON null or resolved marker.
+Clear obsolete unresolved metadata when destination identity becomes known;
+do not reintroduce it from a stale snapshot. Source NOT NULL is unchanged.
+
 ## Client-Facing DB Errors
 
 - Never propagate raw DB error messages to API clients
 - Map DB failures to sanitized internal-error responses
 - Log full DB error diagnostics with `tracing` at the service boundary
+
+## Hand-Built Positional SQL Placeholders Must Leave The Counter Advanced
+
+When building raw SQL with manual `$1, $2, ...` placeholders (as the stats
+endpoints in `database.rs` do for filter predicates), a helper that appends a
+predicate must advance the shared placeholder counter by exactly the number
+of values it pushed — not just push the values themselves:
+
+```rust
+// Good: counter reflects every value actually pushed, so a predicate
+// appended afterward starts numbering from the correct next slot.
+fn push_predicate(where_parts: &mut Vec<String>, values: &mut Vec<Value>, placeholder: &mut usize, ids: &[i64]) {
+    let start = *placeholder;
+    for id in ids {
+        values.push((*id).into());
+        *placeholder += 1;
+    }
+    where_parts.push(format!("col IN ({})", (start..*placeholder).map(|n| format!("${n}")).collect::<Vec<_>>().join(", ")));
+}
+```
+
+A block that pushes placeholders without advancing the counter (or advances
+it by the wrong amount) is harmless in isolation — the bug only manifests
+once a later call appends a further predicate after it, at which point the
+new predicate's `$N` numbering silently misbinds against the wrong value.
+This is easy to ship undetected because nothing before that point exercises
+the interaction.
+
+**Enforce with a test that appends a further dummy predicate after the
+helper under test and asserts the resulting placeholder numbers are
+contiguous** — this is the only way the invariant is actually exercised; a
+test that only checks the helper's own output in isolation cannot catch it.
+See `push_indexed_pairs_predicate` / `push_zero_chains_guard_predicate` in
+`interchain-indexer-logic/src/database.rs` and their
+`test_*_contiguous_after_prior_predicates` /
+`test_*_contiguous_with_predicate_appended_after` tests for the pattern —
+the guard-predicate test was written specifically because an earlier revision
+of that helper left the counter stale in a way that was invisible only
+because nothing was ever built after it.

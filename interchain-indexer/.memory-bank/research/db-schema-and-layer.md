@@ -55,10 +55,17 @@ specialized persistence module, or a higher-level service.
 
 - `interchain-indexer-migration/src/migrations_up/m20251030_000001_initial_up.sql`
 - `interchain-indexer-migration/src/migrations_up/m20260312_175120_add_stats_tables_up.sql`
+- `interchain-indexer-migration/src/migrations_up/m20260824_120000_add_stats_chains_by_bridge_up.sql`
 - `interchain-indexer-logic/src/database.rs`
 - `interchain-indexer-logic/src/bulk.rs`
 - `interchain-indexer-logic/src/message_buffer/persistence.rs`
 - `interchain-indexer-logic/src/stats/projection.rs`
+- `interchain-indexer-logic/src/stats/indexed_chains.rs` — shared SQL condition
+  builders (`chain_unindexed_condition` and friends) consumed by both
+  `stats/projection.rs` and `database.rs`'s raw-SQL stats/backfill queries
+- `interchain-indexer-logic/src/filters.rs` — `ChainBridgeFilter`, the SeaORM
+  condition builder for the read-side unindexed-chain filter over canonical
+  tables
 - `interchain-indexer-logic/src/stats_chains_query.rs`
 - `interchain-indexer-logic/src/bridged_tokens_query.rs`
 - `interchain-indexer-server/src/server.rs`
@@ -115,6 +122,27 @@ This table stores temporary cold-tier state for partially observed messages.
 These tables hold shared indexer/runtime state rather than user-facing canonical
 message data.
 
+#### Protocol-Specific Support Tables (Shared Across Protocols Despite The Name)
+
+- `amb_messages_confirmations` — per-validator signature confirmations, one row
+  per `(message_id, bridge_id, validator_address)`. Every column
+  (`message_id`, `bridge_id`, `validator_address`, `tx_hash`, `block_number`,
+  `block_timestamp`) is protocol-agnostic; the `amb_` prefix is historical, not
+  a scoping constraint. `bridge_id` is what disambiguates rows across bridges
+  sharing the table. The xDai indexer (`interchain-indexer-logic/src/indexer/xdai/`)
+  reuses this table as-is for its own validator confirmations — no new table,
+  no migration beyond a `COMMENT ON TABLE` recording the reuse
+  (`m20260915_120000_add_xdai_and_cross_asset_stats`, folded with the
+  cross-asset stats schema change and renamed accordingly — see
+  [ADR-011](../adr/011-cross-asset-edges-and-per-transfer-linkage.md)). A
+  table rename was considered and rejected:
+  it would need a migration, an entity regeneration, and churn across every
+  consumer for zero behavioural gain.
+- `amb_message_anomalies` — AMB-specific `messageId` collision captures.
+  **Not** reused by xDai: the xDai nonce is contract-issued, so a duplicate key
+  can only be an indexing bug, not a protocol-level collision to record. xDai's
+  `ConsolidatedMessage.amb_anomalies` stays empty for every message.
+
 #### Metadata / Cache Tables
 
 - `tokens`
@@ -128,13 +156,25 @@ config files.
 - `stats_assets`
 - `stats_asset_tokens`
 - `stats_asset_edges`
-- `stats_chains`
+- `stats_chains` — global, exact, `chain_id` PK
+- `stats_chains_by_bridge` — `(bridge_id, chain_id)` PK; per-bridge companion
+  to `stats_chains`, rebuilt in the same transaction by the same worker
+  (`m20260824_120000_add_stats_chains_by_bridge`, ADR-009); backs the
+  `bridge_ids` filter on `GET /api/v1/stats/chains`
 - `stats_messages`
 - `stats_messages_days`
 - stats marker columns on canonical tables:
   - `crosschain_messages.stats_processed`
   - `crosschain_transfers.stats_processed`
   - `crosschain_transfers.stats_asset_id`
+
+`stats_chains_by_bridge`'s migration also rebuilds the four canonical partial
+indexes that keep the `stats_chains`/`stats_chains_by_bridge` recomputation an
+index-only scan (`crosschain_messages_{src,dst}_user_by_chain_idx`,
+`crosschain_transfers_{src,dst}_user_by_chain_idx`, originally added by
+`m20260312_175120_add_stats_tables`), adding `bridge_id` as a **trailing** key
+column so the wider bridge-qualified projection stays covered. Leading columns
+and partial predicates are unchanged.
 
 These tables and marker columns support derived statistical views rather than
 primary indexing state.
@@ -175,11 +215,25 @@ Instead, they mutate the message buffer. During maintenance:
    - `crosschain_transfers`
 3. finalized entries are removed from `pending_messages`
 4. `indexer_checkpoints` is updated conservatively from buffer cursors
-5. finalized canonical rows are projected into stats tables in the same
-   maintenance transaction
+5. **every flushed row (final or `Partial`) is projected into stats tables**
+   in the same maintenance transaction — not only finalized rows.
+   `stats_processed` counting stays gated on eligibility inside the
+   projection functions themselves; the wider trigger exists so token/asset
+   identity maintenance (see below) can see every flush, not only final ones.
+   See `.memory-bank/research/stats-projection.md`.
 
 This means the authoritative canonical write path is split between the buffer
 maintenance algorithm and specialized persistence/projection modules.
+
+Since ADR-004, stats projection is also a **multi-table batched write** in one
+other respect: resolving a transfer's bridged-token identity can trigger a
+union-find merge across two existing `stats_assets` components, repointing
+rows in `stats_asset_tokens`, `stats_asset_edges`, and
+`crosschain_transfers.stats_asset_id` (batched to respect the bind-parameter
+limit) before deleting the losing `stats_assets` row — all inside the same
+transaction as the triggering transfer's projection. See
+`.memory-bank/research/stats-subsystem.md` and
+`.memory-bank/adr/004-stats-observability-horizon-and-asset-union-find.md`.
 
 ### 4. Runtime Metadata Writes
 
@@ -259,6 +313,14 @@ Operationally, DB-layer activity is easiest to inspect through:
   - `avalanche_icm_blockchain_ids`
   - dynamically ensured `chains` rows
   - token metadata in `tokens`
+- `bridge_contracts` is a config-reference table but is **not** authoritative
+  for "is this chain currently indexed for this bridge": it is under-populated
+  during startup stats backfill (which runs before `upsert_bridge_contracts`)
+  and never cleaned up after a contract is removed from `bridges.json` (no
+  code path deletes the row). The authoritative answer is
+  `IndexedChains::may_observe`, built once from the in-memory bridges config —
+  see `.memory-bank/gotchas.md`, "`bridge_contracts` Is Only A Diagnostic
+  Proxy For Runtime Membership"
 - the database layer is not a single repository file or package today; it is a
   hybrid split across facade and specialized modules
 

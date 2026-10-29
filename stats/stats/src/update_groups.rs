@@ -38,6 +38,16 @@ singleton_groups!(
     ActiveRecurringAccountsMonthlyRecurrence120Days,
     ActiveRecurringAccountsWeeklyRecurrence120Days,
     ActiveRecurringAccountsYearlyRecurrence120Days,
+    // Deliberately a singleton, in neither sibling group:
+    // - not in `FilecoinChainFeesGroup`: this counter runs hourly and must
+    //   not trigger that heavy daily dependency chain;
+    // - not in `TxnsStats24hGroup`, although it is also hourly and its tips
+    //   CTE scans the same trailing-24h transactions window: merging would
+    //   save ~60-85 ms of DB CPU per hour (measured on the Filecoin mainnet
+    //   indexer, fully from shared-buffer cache, no disk reads) at the cost
+    //   of teaching the generic 24h statement filecoin-specific columns.
+    //   Consciously accepted.
+    FilecoinChainFees24h,
 );
 
 // According to collected metrics, `TotalTxns` has
@@ -342,6 +352,26 @@ construct_update_group!(ZetachainCrossChainTxnsGroup {
         NewZetachainCrossChainTxns24h,
         PendingZetachainCrossChainTxns,
         TotalZetachainCrossChainTxns,
+    ],
+});
+
+// The intermediate charts (`BurnActorBalance`, `FevmFeeTips`) are listed as
+// members even though they stay disabled: it silences the
+// `Group has dependencies that are not members` startup warning and allows
+// scheduling them standalone later. They are updated transitively via the
+// public charts regardless.
+construct_update_group!(FilecoinChainFeesGroup {
+    charts: [
+        BurnActorBalance,
+        FevmFeeTips,
+        FilecoinNewChainFees,
+        FilecoinNewChainFeesWeekly,
+        FilecoinNewChainFeesMonthly,
+        FilecoinNewChainFeesYearly,
+        FilecoinChainFeesGrowth,
+        FilecoinChainFeesGrowthWeekly,
+        FilecoinChainFeesGrowthMonthly,
+        FilecoinChainFeesGrowthYearly,
     ],
 });
 

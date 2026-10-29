@@ -77,7 +77,7 @@ async fn main() -> Result<(), anyhow::Error> {
             },
         ),
     ]);
-    let reader = SubgraphReader::initialize(db, networks, protocol_infos).await?;
+    let reader = SubgraphReader::initialize(db, networks, protocol_infos, None).await?;
 
     let addresses = vec![
         "0x0292f204513eeafe8c032ffc4cb4c7e10eca908c",
@@ -185,6 +185,7 @@ async fn main() -> Result<(), anyhow::Error> {
             addresses,
             network_id: Some(1),
             protocols: None,
+            all_protocols: false,
         })
         .await
         .expect("failed to quick resolve");

@@ -39,7 +39,6 @@ Defines the blockchains the indexer knows about. Each entry describes one chain:
 | ------------ | ----------- |
 | `chain_id`   | Numeric chain identifier (e.g. 43114 for Avalanche C-Chain). |
 | `name`       | Human-readable chain name. |
-| `native_id`  | Chain’s native/subnet id (hex), used for interchain routing. |
 | `icon`       | Optional URL to chain icon. |
 | `explorer`   | Optional explorer base URL and routes: `url`, `custom_tx_route`, `custom_address_route`, `custom_token_route`. |
 | `rpcs`       | RPC config per chain. |
@@ -110,6 +109,8 @@ docker-compose logs -f SERVICE_NAME
 - `backend`: the main Blockscout API Backend
 - `interchain-indexer`: Universal Bridge Indexer
 - `frontend`: Blockscout frontend web-server
+- `stats`: Blocksout instance statistic service
+- `stats-interchain`: Universal Bridge Indexer statistic service
 
 ## 4. Usage: Frontend, API, Swagger, and metrics
 
@@ -130,7 +131,9 @@ Additionally Universal Bridge Indexer resources are mapped to the `8050` TCP por
   - **GET** `http://localhost:8050/api/v1/interchain/messages` — paginated cross-chain messages (optional query: `page_size`, `page_token`, etc.).
   - **GET** `http://localhost:8050/api/v1/interchain/transfers` — paginated cross-chain transfers.
 
-- **The simplest counters** (will be moved to the separate stats service soon):
+- **The simplest counters — DEPRECATED**, moved to the separate stats service in
+  interchain mode. Both still respond, but the message/transfer counts are always
+  `0`, and they will be removed in a future API iteration:
   - **GET** `http://localhost:8050/api/v1/stats/common` — total indexed messages and transfers.
   - **GET** `http://localhost:8050/api/v1/stats/daily` — daily indexed messages and transfers.
 

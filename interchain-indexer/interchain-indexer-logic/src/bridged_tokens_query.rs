@@ -2,6 +2,7 @@
 
 //! Aggregated bridged-token stats per `stats_asset` for a chain (`/stats/bridged-tokens`).
 
+use interchain_indexer_entity::sea_orm_active_enums::TokenType;
 use sea_orm::{ConnectionTrait, DatabaseBackend, DbErr, FromQueryResult, Statement, Value};
 
 use crate::{
@@ -57,6 +58,7 @@ impl BridgedTokenAggDbRow {
 pub struct BridgedTokenLinkEnriched {
     pub chain_id: i64,
     pub token_address: Vec<u8>,
+    pub token_type: TokenType,
     pub name: Option<String>,
     pub symbol: Option<String>,
     pub icon_url: Option<String>,
@@ -276,9 +278,13 @@ fn build_pagination_from_bridged_tokens(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn list_bridged_token_stats_for_chain(
     db: &impl ConnectionTrait,
     chain_id: i64,
+    counterparty_chain_ids: Option<&[i64]>,
+    bridge_ids: Option<&[i32]>,
+    indexed_pairs: Option<&[(i32, Vec<i64>)]>,
     params: StatsListQuery<'_, BridgedTokensSortField, BridgedTokensPaginationLogic>,
 ) -> Result<
     (
@@ -317,7 +323,74 @@ pub async fn list_bridged_token_stats_for_chain(
             .replace('_', "\\_");
         format!("%{escaped}%")
     });
-    let q_offset: usize = if q_pattern.is_some() { 1 } else { 0 };
+
+    let mut all_values = vec![Value::BigInt(Some(chain_id))];
+
+    let focal_counterparty = match counterparty_chain_ids.filter(|s| !s.is_empty()) {
+        Some(s) => {
+            let start = all_values.len() + 1;
+            let in_list = (0..s.len())
+                .map(|i| format!("${}", start + i))
+                .collect::<Vec<_>>()
+                .join(", ");
+            for &id in s {
+                all_values.push(Value::BigInt(Some(id)));
+            }
+            format!(
+                "(src_chain_id = $1 AND dst_chain_id IN ({in_list})) OR (dst_chain_id = $1 AND src_chain_id IN ({in_list}))"
+            )
+        }
+        None => "src_chain_id = $1 OR dst_chain_id = $1".to_string(),
+    };
+
+    // Parenthesize the focal/counterparty OR before AND-ing the optional bridge
+    // predicate; otherwise SQL precedence would admit edges from unselected
+    // bridges. The bridge filter stays inside the per-asset aggregate so that
+    // multiple bridge rows collapse into one asset row before search, cursor
+    // predicates, ordering, and LIMIT are applied.
+    let mut edges_where = format!("({focal_counterparty})");
+    if let Some(b) = bridge_ids.filter(|s| !s.is_empty()) {
+        let start = all_values.len() + 1;
+        let in_list = (0..b.len())
+            .map(|i| format!("${}", start + i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        for &id in b {
+            all_values.push(Value::Int(Some(id)));
+        }
+        edges_where.push_str(&format!(" AND bridge_id IN ({in_list})"));
+    }
+
+    // Per-bridge indexed-chain restriction (coding-task-2b item 3), same shape
+    // as `database.rs::push_indexed_pairs_predicate`'s doc — permissive arm for
+    // a bridge absent from the config, `NOT IN` + `FALSE` for one present with
+    // an empty chain set. Stays inside the aggregate subquery below so multiple
+    // bridge rows still collapse into one asset row before the name search,
+    // cursor predicate, ordering and LIMIT are applied.
+    {
+        let mut indexed_where_parts: Vec<String> = Vec::new();
+        let mut placeholder = all_values.len() + 1;
+        crate::database::push_indexed_pairs_predicate(
+            &mut indexed_where_parts,
+            &mut all_values,
+            &mut placeholder,
+            "bridge_id",
+            "src_chain_id",
+            "dst_chain_id",
+            indexed_pairs,
+        );
+        for part in indexed_where_parts {
+            edges_where.push_str(" AND ");
+            edges_where.push_str(&part);
+        }
+    }
+
+    let mut name_filter_sql = String::new();
+    if let Some(pat) = q_pattern {
+        let ph = all_values.len() + 1;
+        name_filter_sql = format!(" AND a.name ILIKE ${ph} ESCAPE '\\'");
+        all_values.push(Value::String(Some(Box::new(pat))));
+    }
 
     let (where_extra, order_clause, cursor_vals) = if last_page {
         let inv = inverse_order_clause(sort, order);
@@ -327,7 +400,7 @@ pub async fn list_bridged_token_stats_for_chain(
             PaginationDirection::Next => {
                 let ord = forward_order_clause(sort, order);
                 if let Some(m) = input_pagination.as_ref() {
-                    let p0 = 2 + q_offset;
+                    let p0 = all_values.len() + 1;
                     let (w, v) = cursor_where_next(sort, order, m, p0);
                     (w, ord, v)
                 } else {
@@ -337,7 +410,7 @@ pub async fn list_bridged_token_stats_for_chain(
             PaginationDirection::Prev => {
                 let ord = inverse_order_clause(sort, order);
                 if let Some(m) = input_pagination.as_ref() {
-                    let p0 = 2 + q_offset;
+                    let p0 = all_values.len() + 1;
                     let (w, v) = cursor_where_prev(sort, order, m, p0);
                     (w, ord, v)
                 } else {
@@ -347,13 +420,6 @@ pub async fn list_bridged_token_stats_for_chain(
         }
     };
 
-    let mut all_values = vec![Value::BigInt(Some(chain_id))];
-    let mut name_filter_sql = String::new();
-    if let Some(pat) = q_pattern {
-        let ph = all_values.len() + 1;
-        name_filter_sql = format!(" AND a.name ILIKE ${ph} ESCAPE '\\'");
-        all_values.push(Value::String(Some(Box::new(pat))));
-    }
     all_values.extend(cursor_vals);
     let limit_placeholder = all_values.len() + 1;
     all_values.push(Value::BigInt(Some(fetch)));
@@ -380,12 +446,23 @@ FROM (
            (CASE WHEN s.name IS NULL OR btrim(s.name) = '' THEN 1 ELSE 0 END)::int AS name_blank,
            COALESCE(s.name, '') AS name_sort
     FROM (
-        SELECT stats_asset_id,
-               COALESCE(SUM(CASE WHEN dst_chain_id = $1 THEN transfers_count ELSE 0 END), 0)::bigint AS input_transfers_count,
-               COALESCE(SUM(CASE WHEN src_chain_id = $1 THEN transfers_count ELSE 0 END), 0)::bigint AS output_transfers_count
-        FROM stats_asset_edges
-        WHERE src_chain_id = $1 OR dst_chain_id = $1
-        GROUP BY stats_asset_id
+        -- The alias is load-bearing: the middle layer selects `agg.stats_asset_id`
+        -- and joins `stats_assets s ON s.id = agg.stats_asset_id`, the outer layer
+        -- selects `a.stats_asset_id`, and `BridgedTokenAggDbRow` reads the column by
+        -- name. Returning `asset_id` here fails every bridged-tokens request.
+        SELECT asset_id AS stats_asset_id,
+               COALESCE(SUM(input), 0)::bigint  AS input_transfers_count,
+               COALESCE(SUM(output), 0)::bigint AS output_transfers_count
+        FROM (
+            SELECT dst_stats_asset_id AS asset_id, transfers_count AS input, 0::bigint AS output
+            FROM stats_asset_edges
+            WHERE ({edges_where}) AND dst_chain_id = $1
+            UNION ALL
+            SELECT src_stats_asset_id AS asset_id, 0::bigint AS input, transfers_count AS output
+            FROM stats_asset_edges
+            WHERE ({edges_where}) AND src_chain_id = $1
+        ) u
+        GROUP BY asset_id
     ) agg
     INNER JOIN stats_assets s ON s.id = agg.stats_asset_id
 ) a
@@ -394,6 +471,7 @@ WHERE TRUE
 ORDER BY {order_clause}
 LIMIT ${limit_ph}
 "#,
+        edges_where = edges_where,
         name_filter = name_filter_sql,
         where_extra = where_extra,
         order_clause = order_clause,
@@ -426,6 +504,7 @@ LIMIT ${limit_ph}
 pub async fn fetch_bridged_token_items_for_assets(
     db: &impl ConnectionTrait,
     asset_ids: &[i64],
+    indexed_chain_ids: Option<&[i64]>,
 ) -> Result<std::collections::HashMap<i64, Vec<BridgedTokenLinkEnriched>>, DbErr> {
     use std::collections::HashMap;
 
@@ -434,27 +513,50 @@ pub async fn fetch_bridged_token_items_for_assets(
     }
 
     let placeholders: Vec<String> = (1..=asset_ids.len()).map(|i| format!("${}", i)).collect();
+    let mut vals: Vec<Value> = asset_ids
+        .iter()
+        .map(|id| Value::BigInt(Some(*id)))
+        .collect();
+
+    // `stats_asset_tokens` has no `bridge_id`, so this list can only be
+    // restricted by the union over all bridges -- the same "keyed by chain
+    // alone ⇒ union" rule as `/stats/chains` and `GetChains`. Consequence: with
+    // the default view an asset's token list omits tokens on chains no bridge
+    // indexes, but may still list a token on a chain indexed only by a
+    // *different* bridge than the one whose edges produced the asset (see the
+    // `GetBridgedTokensRequest` proto comment). An empty union means no bridge
+    // is configured at all and restricts nothing, same as item 2.
+    let chain_filter_sql = match indexed_chain_ids.filter(|ids| !ids.is_empty()) {
+        Some(ids) => {
+            let start = vals.len() + 1;
+            let chain_placeholders: Vec<String> =
+                (0..ids.len()).map(|i| format!("${}", start + i)).collect();
+            for id in ids {
+                vals.push(Value::BigInt(Some(*id)));
+            }
+            format!(" AND sat.chain_id IN ({})", chain_placeholders.join(", "))
+        }
+        None => String::new(),
+    };
+
     let sql = format!(
         r#"
 SELECT sat.stats_asset_id,
        sat.chain_id,
        sat.token_address,
+       sat.type::text AS token_type,
        t.name AS token_name,
        t.symbol AS token_symbol,
        t.token_icon AS token_icon,
        t.decimals AS token_decimals
 FROM stats_asset_tokens sat
 LEFT JOIN tokens t ON t.chain_id = sat.chain_id AND t.address = sat.token_address
-WHERE sat.stats_asset_id IN ({})
+WHERE sat.stats_asset_id IN ({}){chain_filter_sql}
 ORDER BY sat.stats_asset_id, sat.chain_id, sat.token_address
 "#,
         placeholders.join(", ")
     );
 
-    let vals: Vec<Value> = asset_ids
-        .iter()
-        .map(|id| Value::BigInt(Some(*id)))
-        .collect();
     let stmt = Statement::from_sql_and_values(DatabaseBackend::Postgres, sql, vals);
 
     let raw = db.query_all(stmt).await?;
@@ -463,6 +565,7 @@ ORDER BY sat.stats_asset_id, sat.chain_id, sat.token_address
         let aid: i64 = r.try_get("", "stats_asset_id")?;
         let chain_id: i64 = r.try_get("", "chain_id")?;
         let token_address: Vec<u8> = r.try_get("", "token_address")?;
+        let token_type: TokenType = r.try_get("", "token_type")?;
         let name: Option<String> = r.try_get("", "token_name").ok();
         let symbol: Option<String> = r.try_get("", "token_symbol").ok();
         let icon: Option<String> = r.try_get("", "token_icon").ok();
@@ -470,6 +573,7 @@ ORDER BY sat.stats_asset_id, sat.chain_id, sat.token_address
         map.entry(aid).or_default().push(BridgedTokenLinkEnriched {
             chain_id,
             token_address,
+            token_type,
             name,
             symbol,
             icon_url: icon,
@@ -483,8 +587,8 @@ ORDER BY sat.stats_asset_id, sat.chain_id, sat.token_address
 mod tests {
     use super::*;
     use interchain_indexer_entity::{
-        chains, sea_orm_active_enums::EdgeAmountSide, stats_asset_edges, stats_asset_tokens,
-        stats_assets, tokens,
+        bridges, chains, sea_orm_active_enums::EdgeAmountSide, stats_asset_edges,
+        stats_asset_tokens, stats_assets, tokens,
     };
     use sea_orm::{ActiveValue::Set, DatabaseConnection, EntityTrait, prelude::BigDecimal};
 
@@ -505,11 +609,33 @@ mod tests {
         chains::Entity::insert_many(models).exec(db).await.unwrap();
     }
 
+    /// Ensures a `bridges` row exists (edges now carry a non-null bridge FK).
+    async fn seed_bridge(db: &DatabaseConnection, id: i32) {
+        let _ = bridges::Entity::insert(bridges::ActiveModel {
+            id: Set(id),
+            name: Set(format!("bridge-{id}")),
+            ..Default::default()
+        })
+        .exec(db)
+        .await;
+    }
+
     async fn seed_asset_edges(
         db: &DatabaseConnection,
         name: Option<String>,
         edges: Vec<(i64, i64, i64)>,
     ) -> i64 {
+        seed_asset_edges_on_bridge(db, name, 1, edges).await
+    }
+
+    /// Like [`seed_asset_edges`] but attributes every edge to `bridge_id`.
+    async fn seed_asset_edges_on_bridge(
+        db: &DatabaseConnection,
+        name: Option<String>,
+        bridge_id: i32,
+        edges: Vec<(i64, i64, i64)>,
+    ) -> i64 {
+        seed_bridge(db, bridge_id).await;
         let id = stats_assets::Entity::insert(stats_assets::ActiveModel {
             name: Set(name),
             ..Default::default()
@@ -518,9 +644,54 @@ mod tests {
         .await
         .unwrap()
         .id;
+        add_asset_edges_on_bridge(db, id, bridge_id, edges).await;
+        id
+    }
+
+    /// Adds one **cross-asset** edge: `src_asset` on `src_chain` moving to a
+    /// *different* `dst_asset` on `dst_chain`. Every other helper here seeds
+    /// `src = dst`, which is the mirror shape; this is the converting-bridge
+    /// shape the binary edge key exists for.
+    #[allow(clippy::too_many_arguments)]
+    async fn add_cross_asset_edge(
+        db: &DatabaseConnection,
+        src_asset: i64,
+        dst_asset: i64,
+        bridge_id: i32,
+        src_chain: i64,
+        dst_chain: i64,
+        count: i64,
+    ) {
+        seed_bridge(db, bridge_id).await;
+        stats_asset_edges::Entity::insert(stats_asset_edges::ActiveModel {
+            src_stats_asset_id: Set(src_asset),
+            dst_stats_asset_id: Set(dst_asset),
+            bridge_id: Set(bridge_id),
+            src_chain_id: Set(src_chain),
+            dst_chain_id: Set(dst_chain),
+            transfers_count: Set(count),
+            cumulative_amount: Set(BigDecimal::from(0u64)),
+            amount_side: Set(EdgeAmountSide::Source),
+            ..Default::default()
+        })
+        .exec(db)
+        .await
+        .unwrap();
+    }
+
+    /// Adds edges on `bridge_id` to an existing stats asset.
+    async fn add_asset_edges_on_bridge(
+        db: &DatabaseConnection,
+        stats_asset_id: i64,
+        bridge_id: i32,
+        edges: Vec<(i64, i64, i64)>,
+    ) {
+        seed_bridge(db, bridge_id).await;
         for (src, dst, cnt) in edges {
             stats_asset_edges::Entity::insert(stats_asset_edges::ActiveModel {
-                stats_asset_id: Set(id),
+                src_stats_asset_id: Set(stats_asset_id),
+                dst_stats_asset_id: Set(stats_asset_id),
+                bridge_id: Set(bridge_id),
                 src_chain_id: Set(src),
                 dst_chain_id: Set(dst),
                 transfers_count: Set(cnt),
@@ -532,7 +703,6 @@ mod tests {
             .await
             .unwrap();
         }
-        id
     }
 
     #[tokio::test]
@@ -556,6 +726,9 @@ mod tests {
         let (rows, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -598,6 +771,9 @@ mod tests {
         let (rows, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::OutputTransfers,
                 order: StatsSortOrder::Desc,
@@ -628,6 +804,9 @@ mod tests {
         let (rows, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -660,6 +839,9 @@ mod tests {
         let (p1, pag1) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -679,6 +861,9 @@ mod tests {
         let (p2, pag2) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -697,6 +882,9 @@ mod tests {
         let (p1b, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -724,6 +912,9 @@ mod tests {
         let (rows, pag) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -782,7 +973,7 @@ mod tests {
         .await
         .unwrap();
 
-        let m = fetch_bridged_token_items_for_assets(db.as_ref(), &[aid])
+        let m = fetch_bridged_token_items_for_assets(db.as_ref(), &[aid], None)
             .await
             .unwrap();
         let list = m.get(&aid).unwrap();
@@ -792,8 +983,32 @@ mod tests {
         assert_eq!(enriched.symbol.as_deref(), Some("TS"));
         assert_eq!(enriched.icon_url.as_deref(), Some("http://i"));
         assert_eq!(enriched.decimals, Some(8));
+        assert_eq!(enriched.token_type, TokenType::Erc20);
         let bare = list.iter().find(|t| t.chain_id == 2).unwrap();
         assert!(bare.name.is_none());
+        assert_eq!(bare.token_type, TokenType::Erc20);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_native_type_survives_missing_metadata() {
+        let g = init_db("bridged_tokens_native_type").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1]).await;
+        let database = crate::InterchainDatabase::new(db.clone());
+        let asset = database.create_stats_asset(None, None, None).await.unwrap();
+        database
+            .link_token_to_stats_asset(asset.id, 1, vec![0; 20])
+            .await
+            .unwrap();
+
+        let rows = fetch_bridged_token_items_for_assets(db.as_ref(), &[asset.id], None)
+            .await
+            .unwrap();
+        let token = &rows[&asset.id][0];
+        assert_eq!(token.token_type, TokenType::Native);
+        assert_eq!(token.token_address, vec![0; 20]);
+        assert!(token.name.is_none());
     }
 
     #[tokio::test]
@@ -804,10 +1019,19 @@ mod tests {
         seed_chains(db.as_ref(), &[1, 2]).await;
         let _ = seed_asset_edges(db.as_ref(), Some("S".into()), vec![(1, 2, 2)]).await;
         let db_arc = std::sync::Arc::new(crate::InterchainDatabase::new(db.clone()));
-        let stats = crate::StatsService::new(db_arc, None, Default::default());
+        let stats = crate::StatsService::new(
+            db_arc,
+            None,
+            Default::default(),
+            crate::IndexedChains::AllIndexed,
+        );
         let (rows, p) = stats
             .get_bridged_tokens_for_chain(
                 1,
+                None,
+                None,
+                None,
+                None,
                 StatsListQuery {
                     sort: BridgedTokensSortField::Name,
                     order: StatsSortOrder::Asc,
@@ -836,6 +1060,9 @@ mod tests {
         let (rows, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -882,6 +1109,9 @@ mod tests {
         let (rows, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -899,6 +1129,9 @@ mod tests {
         let (rows, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -927,6 +1160,9 @@ mod tests {
         let (rows, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -955,6 +1191,9 @@ mod tests {
         let (p1, pag1) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -973,6 +1212,9 @@ mod tests {
         let (p2, pag2) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -990,6 +1232,9 @@ mod tests {
         let (p1b, _) = list_bridged_token_stats_for_chain(
             db.as_ref(),
             1,
+            None,
+            None,
+            None,
             StatsListQuery {
                 sort: BridgedTokensSortField::Name,
                 order: StatsSortOrder::Asc,
@@ -1002,5 +1247,764 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(p1b[0].name.as_deref(), Some("GrpA"));
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn test_list_bridged_token_stats_counterparty_set_filters_edges() {
+        let g = init_db("test_list_bridged_token_stats_counterparty_set_filters_edges").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 2, 3, 9]).await;
+        // Alpha: outbound to 2 + inbound from 3
+        let _alpha = seed_asset_edges(
+            db.as_ref(),
+            Some("AlphaCp".into()),
+            vec![(1, 2, 5), (3, 1, 3)],
+        )
+        .await;
+        // Beta: only counterparty 9
+        let _beta = seed_asset_edges(db.as_ref(), Some("BetaCp".into()), vec![(1, 9, 7)]).await;
+
+        let (rows, _) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            Some(&[2, 3]),
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 50,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name.as_deref(), Some("AlphaCp"));
+        assert_eq!(rows[0].output_transfers_count, 5);
+        assert_eq!(rows[0].input_transfers_count, 3);
+        assert_eq!(rows[0].total_transfers_count, 8);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn test_list_bridged_token_stats_counterparty_loopback_included_when_in_set() {
+        let g = init_db("test_list_bridged_token_stats_counterparty_loopback_included_when_in_set")
+            .await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 2]).await;
+        let _loopback =
+            seed_asset_edges(db.as_ref(), Some("LoopToken".into()), vec![(1, 1, 4)]).await;
+        let _other =
+            seed_asset_edges(db.as_ref(), Some("OtherToken".into()), vec![(1, 2, 9)]).await;
+
+        // N∈S: loopback (1,1) matches; peer 2 does not when S={1}.
+        let (rows, _) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            Some(&[1]),
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 50,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name.as_deref(), Some("LoopToken"));
+        assert_eq!(rows[0].output_transfers_count, 4);
+        assert_eq!(rows[0].input_transfers_count, 4);
+        assert_eq!(rows[0].total_transfers_count, 8);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn test_list_bridged_token_stats_counterparty_q_cursor_page_stable() {
+        let g = init_db("test_list_bridged_token_stats_counterparty_q_cursor_page_stable").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 2, 3, 99]).await;
+        for nm in ["CpA", "CpB", "CpC", "Zed"] {
+            // Edges to counterparties 2 and 3 so S={2,3} keeps Cp* rows.
+            seed_asset_edges(db.as_ref(), Some(nm.into()), vec![(1, 2, 1), (3, 1, 1)]).await;
+        }
+        // Outside set — must not appear even without q.
+        seed_asset_edges(db.as_ref(), Some("CpOutside".into()), vec![(1, 99, 100)]).await;
+
+        let counterparties = [2i64, 3];
+        let (p1, pag1) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            Some(&counterparties),
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 1,
+                last_page: false,
+                input_pagination: None,
+                q: Some("Cp"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p1[0].name.as_deref(), Some("CpA"));
+        assert_eq!(p1[0].total_transfers_count, 2);
+        let next_tok = pag1.next_marker.expect("next");
+
+        let (p2, pag2) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            Some(&counterparties),
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 1,
+                last_page: false,
+                input_pagination: Some(next_tok),
+                q: Some("Cp"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p2[0].name.as_deref(), Some("CpB"));
+        let prev_tok = pag2.prev_marker.expect("prev");
+
+        let (p1b, _) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            Some(&counterparties),
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 1,
+                last_page: false,
+                input_pagination: Some(prev_tok),
+                q: Some("Cp"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p1b[0].name.as_deref(), Some("CpA"));
+        assert_eq!(p1b[0].stats_asset_id, p1[0].stats_asset_id);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_two_bridges_same_edge_separate_rows_collapse_and_filter() {
+        let g = init_db("bridged_tokens_two_bridges_same_edge").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 2]).await;
+        seed_bridge(db.as_ref(), 1).await;
+        seed_bridge(db.as_ref(), 2).await;
+
+        // Same logical asset on the same chain edge over two different bridges:
+        // two distinct edge rows.
+        let aid =
+            seed_asset_edges_on_bridge(db.as_ref(), Some("Multi".into()), 1, vec![(1, 2, 3)]).await;
+        add_asset_edges_on_bridge(db.as_ref(), aid, 2, vec![(1, 2, 5)]).await;
+
+        let row_count = stats_asset_edges::Entity::find()
+            .all(db.as_ref())
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(row_count, 2, "two bridge rows for one asset/edge");
+
+        let query = |bridges: Option<&'static [i32]>| {
+            let db = db.clone();
+            async move {
+                list_bridged_token_stats_for_chain(
+                    db.as_ref(),
+                    1,
+                    None,
+                    bridges,
+                    None,
+                    StatsListQuery {
+                        sort: BridgedTokensSortField::Name,
+                        order: StatsSortOrder::Asc,
+                        page_size: 50,
+                        last_page: false,
+                        input_pagination: None,
+                        q: None,
+                    },
+                )
+                .await
+                .unwrap()
+                .0
+            }
+        };
+
+        // Unfiltered collapses both bridge rows into one asset row.
+        let all = query(None).await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].output_transfers_count, 8);
+
+        let only_1 = query(Some(&[1])).await;
+        assert_eq!(only_1.len(), 1);
+        assert_eq!(only_1[0].output_transfers_count, 3);
+
+        let only_2 = query(Some(&[2])).await;
+        assert_eq!(only_2.len(), 1);
+        assert_eq!(only_2[0].output_transfers_count, 5);
+
+        let both = query(Some(&[1, 2])).await;
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0].output_transfers_count, 8);
+    }
+
+    /// The xDai shape, at the read boundary: three assets joined by four
+    /// cross-asset routes. Every other read-path test seeds `src = dst`, so
+    /// without this one the capability the binary edge key was introduced for
+    /// is never exercised through the query at all.
+    ///
+    /// Focal chain `1` must yield the two Ethereum assets separately -- that
+    /// separation is the whole point of the task. Focal chain `100` must yield
+    /// one `xDAI` row aggregating both incoming routes, because on Gnosis they
+    /// really are one coin.
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_cross_asset_edges_split_by_focal_chain() {
+        let g = init_db("bridged_tokens_cross_asset_focal").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 100]).await;
+        seed_bridge(db.as_ref(), 3).await;
+
+        let dai = seed_asset_edges_on_bridge(db.as_ref(), Some("DAI".into()), 3, vec![]).await;
+        let usds = seed_asset_edges_on_bridge(db.as_ref(), Some("USDS".into()), 3, vec![]).await;
+        let xdai = seed_asset_edges_on_bridge(db.as_ref(), Some("xDAI".into()), 3, vec![]).await;
+
+        // Eth -> Gno: both Ethereum assets converge on the one Gnosis asset.
+        add_cross_asset_edge(db.as_ref(), dai, xdai, 3, 1, 100, 7).await;
+        add_cross_asset_edge(db.as_ref(), usds, xdai, 3, 1, 100, 5).await;
+        // Gno -> Eth: the user picks which Ethereum asset to receive.
+        add_cross_asset_edge(db.as_ref(), xdai, dai, 3, 100, 1, 2).await;
+        add_cross_asset_edge(db.as_ref(), xdai, usds, 3, 100, 1, 3).await;
+
+        let query = |focal: i64| {
+            let db = db.clone();
+            async move {
+                list_bridged_token_stats_for_chain(
+                    db.as_ref(),
+                    focal,
+                    None,
+                    None,
+                    None,
+                    StatsListQuery {
+                        sort: BridgedTokensSortField::Name,
+                        order: StatsSortOrder::Asc,
+                        page_size: 50,
+                        last_page: false,
+                        input_pagination: None,
+                        q: None,
+                    },
+                )
+                .await
+                .unwrap()
+                .0
+            }
+        };
+
+        let eth = query(1).await;
+        assert_eq!(
+            eth.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+            vec![Some("DAI".to_string()), Some("USDS".to_string())],
+            "focal chain 1 must list the two Ethereum assets separately, and must not \
+             list xDAI, which has no token there"
+        );
+        // DAI: 7 out to Gnosis, 2 back in. USDS: 5 out, 3 in.
+        assert_eq!(eth[0].output_transfers_count, 7);
+        assert_eq!(eth[0].input_transfers_count, 2);
+        assert_eq!(eth[0].total_transfers_count, 9);
+        assert_eq!(eth[1].output_transfers_count, 5);
+        assert_eq!(eth[1].input_transfers_count, 3);
+        assert_eq!(eth[1].total_transfers_count, 8);
+
+        let gno = query(100).await;
+        assert_eq!(
+            gno.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+            vec![Some("xDAI".to_string())],
+            "focal chain 100 must collapse both incoming routes into the single Gnosis asset"
+        );
+        assert_eq!(gno[0].input_transfers_count, 12, "7 from DAI + 5 from USDS");
+        assert_eq!(gno[0].output_transfers_count, 5, "2 to DAI + 3 to USDS");
+        assert_eq!(gno[0].total_transfers_count, 17);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_pagination_after_bridge_collapse() {
+        let g = init_db("bridged_tokens_page_after_collapse").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 2]).await;
+        seed_bridge(db.as_ref(), 1).await;
+        seed_bridge(db.as_ref(), 2).await;
+
+        // Two assets, each moving over the same edge on two bridges. After
+        // collapse there must be exactly two paginated asset rows, not four.
+        for nm in ["A", "B"] {
+            let aid =
+                seed_asset_edges_on_bridge(db.as_ref(), Some(nm.into()), 1, vec![(1, 2, 1)]).await;
+            add_asset_edges_on_bridge(db.as_ref(), aid, 2, vec![(1, 2, 1)]).await;
+        }
+
+        let (p1, pag1) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            None,
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 1,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p1[0].name.as_deref(), Some("A"));
+        assert_eq!(p1[0].total_transfers_count, 2, "collapsed across bridges");
+        let next_tok = pag1.next_marker.expect("next");
+
+        let (p2, _) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            None,
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 1,
+                last_page: false,
+                input_pagination: Some(next_tok),
+                q: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p2.len(), 1);
+        assert_eq!(p2[0].name.as_deref(), Some("B"));
+    }
+
+    // --- indexed-chain restriction (coding-task-2b items 3, 4, hazard 2/3, 6, 9, 11, 12) ---
+
+    /// Bridge 1 indexes `{1, 100}`, bridge 2 indexes `{1, 250}` -- the fixture
+    /// `coding-task-2b`'s Verification section prescribes.
+    fn two_bridge_indexed_chains() -> crate::IndexedChains {
+        crate::IndexedChains::from_pairs([(1, 1), (1, 100), (2, 1), (2, 250)])
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_default_excludes_edge_unindexed_for_its_bridge() {
+        let g = init_db("bridged_tokens_default_excludes_unindexed_for_bridge").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 100, 250]).await;
+        // Bridge 1 does not index 250: this edge must be excluded by default.
+        let _excluded =
+            seed_asset_edges_on_bridge(db.as_ref(), Some("Excluded".into()), 1, vec![(1, 250, 9)])
+                .await;
+        // Bridge 2 does index 250: this edge must stay visible.
+        let _included =
+            seed_asset_edges_on_bridge(db.as_ref(), Some("Included".into()), 2, vec![(1, 250, 4)])
+                .await;
+
+        let indexed = two_bridge_indexed_chains();
+        let pairs = indexed.configured_pairs(None);
+
+        let (rows, _) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            None,
+            None,
+            pairs.as_deref(),
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 50,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<Option<String>> = rows.iter().map(|r| r.name.clone()).collect();
+        assert!(
+            !names.contains(&Some("Excluded".to_string())),
+            "bridge 1's unindexed-250 edge must be hidden by default: {names:?}"
+        );
+        assert!(
+            names.contains(&Some("Included".to_string())),
+            "bridge 2's indexed-250 edge must stay visible: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_token_list_excludes_unindexed_chain_tokens() {
+        let g = init_db("bridged_tokens_token_list_excludes_unindexed").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 100, 999]).await;
+        let aid = seed_asset_edges(db.as_ref(), Some("Tok".into()), vec![(1, 100, 1)]).await;
+        stats_asset_tokens::Entity::insert(stats_asset_tokens::ActiveModel {
+            stats_asset_id: Set(aid),
+            chain_id: Set(1),
+            token_address: Set(vec![0x11u8; 20]),
+            ..Default::default()
+        })
+        .exec(db.as_ref())
+        .await
+        .unwrap();
+        // Chain 999 is outside the union: this token row must be hidden by default.
+        stats_asset_tokens::Entity::insert(stats_asset_tokens::ActiveModel {
+            stats_asset_id: Set(aid),
+            chain_id: Set(999),
+            token_address: Set(vec![0x22u8; 20]),
+            ..Default::default()
+        })
+        .exec(db.as_ref())
+        .await
+        .unwrap();
+
+        let indexed = two_bridge_indexed_chains();
+        let union = indexed.configured_union();
+
+        let default_map =
+            fetch_bridged_token_items_for_assets(db.as_ref(), &[aid], union.as_deref())
+                .await
+                .unwrap();
+        let default_chains: Vec<i64> = default_map
+            .get(&aid)
+            .unwrap()
+            .iter()
+            .map(|t| t.chain_id)
+            .collect();
+        assert!(default_chains.contains(&1));
+        assert!(
+            !default_chains.contains(&999),
+            "chain 999 must be hidden by default: {default_chains:?}"
+        );
+
+        let opt_in_map = fetch_bridged_token_items_for_assets(db.as_ref(), &[aid], None)
+            .await
+            .unwrap();
+        let opt_in_chains: Vec<i64> = opt_in_map
+            .get(&aid)
+            .unwrap()
+            .iter()
+            .map(|t| t.chain_id)
+            .collect();
+        assert!(
+            opt_in_chains.contains(&999),
+            "opt-in must include chain 999: {opt_in_chains:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_pagination_unaffected_by_indexed_predicate() {
+        let g = init_db("bridged_tokens_pagination_unaffected_by_indexed").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 100]).await;
+        for nm in ["A", "B", "C"] {
+            seed_asset_edges_on_bridge(db.as_ref(), Some(nm.into()), 1, vec![(1, 100, 1)]).await;
+        }
+
+        let indexed = two_bridge_indexed_chains();
+        let pairs = indexed.configured_pairs(None);
+
+        let query = |input_pagination| {
+            let db = db.clone();
+            let pairs = pairs.clone();
+            async move {
+                list_bridged_token_stats_for_chain(
+                    db.as_ref(),
+                    1,
+                    None,
+                    None,
+                    pairs.as_deref(),
+                    StatsListQuery {
+                        sort: BridgedTokensSortField::Name,
+                        order: StatsSortOrder::Asc,
+                        page_size: 1,
+                        last_page: false,
+                        input_pagination,
+                        q: None,
+                    },
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let (p1, pag1) = query(None).await;
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p1[0].name.as_deref(), Some("A"));
+        let next_tok = pag1.next_marker.expect("next");
+
+        let (p2, pag2) = query(Some(next_tok)).await;
+        assert_eq!(p2[0].name.as_deref(), Some("B"));
+        let prev_tok = pag2.prev_marker.expect("prev");
+
+        let (p1b, _) = query(Some(prev_tok)).await;
+        assert_eq!(p1b[0].name.as_deref(), Some("A"));
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_removed_bridge_included_present_but_empty_excluded() {
+        let g = init_db("bridged_tokens_removed_bridge_vs_present_empty").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 100, 999]).await;
+        // Bridge 5 is absent from the config entirely (removed): its edge must
+        // still be counted by default, even though chain 999 is not in anyone's
+        // indexed set.
+        let _removed = seed_asset_edges_on_bridge(
+            db.as_ref(),
+            Some("RemovedBridgeRow".into()),
+            5,
+            vec![(1, 999, 3)],
+        )
+        .await;
+        // Bridge 6 is present but declared with zero contracts: its rows must be
+        // excluded, opposite of bridge 5's.
+        let _present_empty = seed_asset_edges_on_bridge(
+            db.as_ref(),
+            Some("PresentButEmptyBridgeRow".into()),
+            6,
+            vec![(1, 100, 3)],
+        )
+        .await;
+
+        let indexed = crate::IndexedChains::from_bridges([(6, vec![])]);
+        let pairs = indexed.configured_pairs(None);
+
+        let (rows, _) = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            None,
+            None,
+            pairs.as_deref(),
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 50,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<Option<String>> = rows.iter().map(|r| r.name.clone()).collect();
+        assert!(
+            names.contains(&Some("RemovedBridgeRow".to_string())),
+            "a bridge absent from the config must stay permissive: {names:?}"
+        );
+        assert!(
+            !names.contains(&Some("PresentButEmptyBridgeRow".to_string())),
+            "a bridge present with an empty chain set must be excluded: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_empty_configured_pairs_restricts_nothing() {
+        let g = init_db("bridged_tokens_empty_configured_pairs_restricts_nothing").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 999]).await;
+        let _aid = seed_asset_edges(db.as_ref(), Some("Anything".into()), vec![(1, 999, 2)]).await;
+
+        // `Some(&[])` means no bridge is configured at all, which must restrict
+        // nothing -- the same as `None`.
+        let with_none = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            None,
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 50,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap()
+        .0;
+        let with_empty = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            None,
+            None,
+            Some(&[]),
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 50,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap()
+        .0;
+
+        let ids_none: Vec<i64> = with_none.iter().map(|r| r.stats_asset_id).collect();
+        let ids_empty: Vec<i64> = with_empty.iter().map(|r| r.stats_asset_id).collect();
+        assert_eq!(ids_none, ids_empty);
+        assert!(!ids_none.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_pruning_bridge_ids_disjunction_no_result_change() {
+        // Restricting `bridge_ids` to a subset must prune `configured_pairs`'
+        // `NOT IN` list identically, and
+        // the *result set* must be identical whether or not that pruning
+        // happens, because `bridge_id IN (bridge_ids)` already excludes the
+        // unlisted bridge's rows regardless of what the permissive arm says
+        // about it.
+        let g = init_db("bridged_tokens_pruning_bridge_ids_no_change").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 100, 250]).await;
+        seed_asset_edges_on_bridge(db.as_ref(), Some("OnBridge1".into()), 1, vec![(1, 100, 5)])
+            .await;
+        seed_asset_edges_on_bridge(db.as_ref(), Some("OnBridge2".into()), 2, vec![(1, 250, 7)])
+            .await;
+
+        let indexed = two_bridge_indexed_chains();
+        let bridge_ids = [1i32];
+        let pruned_pairs = indexed.configured_pairs(Some(&bridge_ids));
+        let full_pairs = indexed.configured_pairs(None);
+        assert_ne!(
+            pruned_pairs, full_pairs,
+            "the fixture must actually exercise pruning"
+        );
+
+        let query = |pairs: Option<Vec<(i32, Vec<i64>)>>| {
+            let db = db.clone();
+            async move {
+                list_bridged_token_stats_for_chain(
+                    db.as_ref(),
+                    1,
+                    None,
+                    Some(&bridge_ids),
+                    pairs.as_deref(),
+                    StatsListQuery {
+                        sort: BridgedTokensSortField::Name,
+                        order: StatsSortOrder::Asc,
+                        page_size: 50,
+                        last_page: false,
+                        input_pagination: None,
+                        q: None,
+                    },
+                )
+                .await
+                .unwrap()
+                .0
+            }
+        };
+
+        let with_pruned = query(pruned_pairs).await;
+        let with_full = query(full_pairs).await;
+
+        let names_pruned: Vec<Option<String>> =
+            with_pruned.iter().map(|r| r.name.clone()).collect();
+        let names_full: Vec<Option<String>> = with_full.iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names_pruned, names_full);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs database"]
+    async fn bridged_tokens_opt_in_returns_same_rows_until_projection_widens() {
+        // `stats_asset_edges` rows are only ever written today for chain pairs
+        // the row's own bridge indexes (`stats/projection.rs`'s finality gate).
+        // So an
+        // indexed-pairs restriction over today's data is a no-op: this test
+        // must be tightened to "opt-in returns strictly more rows" if the
+        // projection later starts persisting unindexed bridge/chain pairs.
+        let g = init_db("bridged_tokens_opt_in_same_until_projection_widens").await;
+        let db = g.client();
+        seed_chains(db.as_ref(), &[1, 100]).await;
+        seed_asset_edges_on_bridge(
+            db.as_ref(),
+            Some("FullyIndexed".into()),
+            1,
+            vec![(1, 100, 3)],
+        )
+        .await;
+
+        let indexed = two_bridge_indexed_chains();
+        let pairs = indexed.configured_pairs(None);
+
+        let restricted = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            None,
+            None,
+            pairs.as_deref(),
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 50,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap()
+        .0;
+        let opt_in = list_bridged_token_stats_for_chain(
+            db.as_ref(),
+            1,
+            None,
+            None,
+            None,
+            StatsListQuery {
+                sort: BridgedTokensSortField::Name,
+                order: StatsSortOrder::Asc,
+                page_size: 50,
+                last_page: false,
+                input_pagination: None,
+                q: None,
+            },
+        )
+        .await
+        .unwrap()
+        .0;
+
+        let ids_restricted: Vec<i64> = restricted.iter().map(|r| r.stats_asset_id).collect();
+        let ids_opt_in: Vec<i64> = opt_in.iter().map(|r| r.stats_asset_id).collect();
+        assert_eq!(ids_restricted, ids_opt_in);
     }
 }

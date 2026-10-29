@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
-use super::chain_info_proto::chain_model_to_proto;
+use super::{
+    chain_info_proto::chain_model_to_proto,
+    interchain_service::token_type_to_proto,
+    utils::{build_chain_bridge_filter, non_empty, parse_bridge_ids_csv, parse_chain_ids_csv},
+};
 use crate::{
-    proto::{interchain_statistics_service_server::*, *},
+    // `TokenType` is nested in `TokenInfo` so its value names do not squat the
+    // proto package namespace — see `.memory-bank/rules/rust-style.md`.
+    proto::{interchain_statistics_service_server::*, token_info::TokenType, *},
     settings::ApiSettings,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use interchain_indexer_logic::{
     BridgedTokenListRow, BridgedTokensPaginationLogic, BridgedTokensSortField, ChainInfoService,
-    StatsChainListRow, StatsChainsPaginationLogic, StatsChainsSortField, StatsListQuery,
-    StatsService, StatsSortOrder, utils::to_hex_prefixed,
+    IndexedChains, StatsChainListRow, StatsChainsPaginationLogic, StatsChainsScope,
+    StatsChainsSortField, StatsListQuery, StatsService, StatsSortOrder, utils::to_hex_prefixed,
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -18,6 +24,7 @@ pub struct InterchainStatisticsServiceImpl {
     pub stats: Arc<StatsService>,
     pub api_settings: ApiSettings,
     pub chain_info: Arc<ChainInfoService>,
+    pub indexed_chains: Arc<IndexedChains>,
 }
 
 impl InterchainStatisticsServiceImpl {
@@ -25,17 +32,37 @@ impl InterchainStatisticsServiceImpl {
         stats: Arc<StatsService>,
         api_settings: ApiSettings,
         chain_info: Arc<ChainInfoService>,
+        indexed_chains: Arc<IndexedChains>,
     ) -> Self {
         Self {
             stats,
             api_settings,
             chain_info,
+            indexed_chains,
         }
     }
 }
 
 #[async_trait::async_trait]
 impl InterchainStatisticsService for InterchainStatisticsServiceImpl {
+    /// DEPRECATED — `GET /api/v1/stats/common`. Returns zero counters without
+    /// touching the database.
+    ///
+    /// Every call used to run an unbounded `COUNT(*)` over
+    /// `crosschain_messages` plus a joined `COUNT(*)` over
+    /// `crosschain_transfers`, uncached, inside one transaction — the heaviest
+    /// query this service served, growing with the canonical tables. The same
+    /// numbers now come from the stats service in interchain mode, which
+    /// precomputes them.
+    ///
+    /// The request is still parsed and its filters still validated, so a
+    /// malformed query keeps failing with `400` instead of silently returning
+    /// zeros. `timestamp` is still echoed back, because it is the request's own
+    /// value, not a computed statistic.
+    ///
+    /// TODO(next API iteration): remove this handler, the RPC and its messages
+    /// in `stats.proto`, the HTTP rule in `api_config_http.yaml`, and
+    /// `InterchainDatabase::get_total_counters` with its tests.
     async fn get_common_statistics(
         &self,
         request: Request<GetCommonStatisticsRequest>,
@@ -46,21 +73,34 @@ impl InterchainStatisticsService for InterchainStatisticsServiceImpl {
             .and_then(|ts| DateTime::<Utc>::from_timestamp(ts as i64, 0).map(|dt| dt.naive_utc()))
             .unwrap_or_else(|| Utc::now().naive_utc());
 
-        let counters = self
-            .stats
-            .interchain_db()
-            .get_total_counters(timestamp, None, None)
-            .await
-            .map_err(map_stats_error)?;
+        // Parsed and validated, then dropped: a malformed query keeps failing
+        // with `400` rather than silently answering zeros, and no query runs.
+        build_chain_bridge_filter(
+            inner.home_chain_id,
+            inner.counterparty_chain_ids.as_deref(),
+            inner.src_chain_ids.as_deref(),
+            inner.dst_chain_ids.as_deref(),
+            inner.bridge_ids.as_deref(),
+            self.indexed_chains.as_ref(),
+            inner.include_unindexed_chains.unwrap_or(false),
+        )?;
 
         let response = GetCommonStatisticsResponse {
-            timestamp: super::utils::db_datetime_to_string(counters.timestamp),
-            total_messages: counters.total_messages,
-            total_transfers: counters.total_transfers,
+            timestamp: super::utils::db_datetime_to_string(timestamp),
+            total_messages: 0,
+            total_transfers: 0,
         };
         Ok(Response::new(response))
     }
 
+    /// DEPRECATED — `GET /api/v1/stats/daily`. Returns zero counters without
+    /// touching the database. Same reasoning, same removal plan as
+    /// [`Self::get_common_statistics`]; `date` is still the day of the
+    /// request's own `timestamp`.
+    ///
+    /// TODO(next API iteration): remove this handler, the RPC and its messages
+    /// in `stats.proto`, the HTTP rule in `api_config_http.yaml`, and
+    /// `InterchainDatabase::get_daily_counters` with its tests.
     async fn get_daily_statistics(
         &self,
         request: Request<GetDailyStatisticsRequest>,
@@ -71,17 +111,22 @@ impl InterchainStatisticsService for InterchainStatisticsServiceImpl {
             .and_then(|ts| DateTime::<Utc>::from_timestamp(ts as i64, 0).map(|dt| dt.naive_utc()))
             .unwrap_or_else(|| Utc::now().naive_utc());
 
-        let counters = self
-            .stats
-            .interchain_db()
-            .get_daily_counters(timestamp, None, None)
-            .await
-            .map_err(map_stats_error)?;
+        // Parsed and validated, then dropped: a malformed query keeps failing
+        // with `400` rather than silently answering zeros, and no query runs.
+        build_chain_bridge_filter(
+            inner.home_chain_id,
+            inner.counterparty_chain_ids.as_deref(),
+            inner.src_chain_ids.as_deref(),
+            inner.dst_chain_ids.as_deref(),
+            inner.bridge_ids.as_deref(),
+            self.indexed_chains.as_ref(),
+            inner.include_unindexed_chains.unwrap_or(false),
+        )?;
 
         let response = GetDailyStatisticsResponse {
-            date: counters.date.to_string(),
-            daily_messages: counters.daily_messages,
-            daily_transfers: counters.daily_transfers,
+            date: timestamp.date().to_string(),
+            daily_messages: 0,
+            daily_transfers: 0,
         };
         Ok(Response::new(response))
     }
@@ -91,6 +136,7 @@ impl InterchainStatisticsService for InterchainStatisticsServiceImpl {
         request: Request<GetBridgedTokensRequest>,
     ) -> Result<Response<GetBridgedTokensResponse>, Status> {
         let inner = request.into_inner();
+        let include_unindexed = inner.include_unindexed_chains.unwrap_or(false);
         let sort = BridgedTokensSortField::from_proto_sort(inner.sort);
         let order = StatsSortOrder::from_proto_order(inner.order)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -122,11 +168,33 @@ impl InterchainStatisticsService for InterchainStatisticsServiceImpl {
             .clamp(1, self.api_settings.max_page_size) as usize;
         let last_page = inner.last_page.unwrap_or(false);
         let q = normalize_stats_q(inner.q.as_deref());
+        let counterparty = non_empty(parse_chain_ids_csv(
+            "counterparty_chain_ids",
+            inner.counterparty_chain_ids.as_deref(),
+        )?);
+        let bridges = non_empty(parse_bridge_ids_csv(inner.bridge_ids.as_deref())?);
+
+        // Per-bridge restriction for the edges aggregate, and the union over all
+        // bridges for the per-asset token list (`stats_asset_tokens` has no
+        // `bridge_id`, so it can only use the union). Both derive from
+        // `IndexedChains` so they can never disagree with `/stats/chains` or
+        // `GetChains`. `None` (opt-in, or an `AllIndexed` configuration) applies
+        // no restriction.
+        let pairs = (!include_unindexed)
+            .then(|| self.indexed_chains.configured_pairs(bridges.as_deref()))
+            .flatten();
+        let union = (!include_unindexed)
+            .then(|| self.indexed_chains.configured_union())
+            .flatten();
 
         let (rows, pagination) = self
             .stats
             .get_bridged_tokens_for_chain(
                 inner.chain_id,
+                counterparty.as_deref(),
+                bridges.as_deref(),
+                pairs.as_deref(),
+                union.as_deref(),
                 StatsListQuery {
                     sort,
                     order,
@@ -157,7 +225,8 @@ impl InterchainStatisticsService for InterchainStatisticsServiceImpl {
         request: Request<GetChainsStatsRequest>,
     ) -> Result<Response<GetChainsStatsResponse>, Status> {
         let inner = request.into_inner();
-        let chain_ids = parse_chain_ids_csv(inner.chain_ids.as_deref())?;
+        let include_unindexed = inner.include_unindexed_chains.unwrap_or(false);
+        let chain_ids = parse_chain_ids_csv("chain_ids", inner.chain_ids.as_deref())?;
         let sort = StatsChainsSortField::from_proto_sort(inner.sort);
         let order = StatsSortOrder::from_proto_order(inner.order)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -188,10 +257,42 @@ impl InterchainStatisticsService for InterchainStatisticsServiceImpl {
         let last_page = inner.last_page.unwrap_or(false);
         let q = normalize_stats_q(inner.q.as_deref());
 
+        // `None` = no restriction (opt-in, or an `AllIndexed` configuration).
+        // Derived from the same `configured_union()` accessor `GetChains` uses,
+        // so the two directory views cannot drift apart. This gate stays
+        // global even under a bridge-filtered scope: `include_unindexed_chains`
+        // means "no configured bridge indexes this chain", never "not indexed
+        // by the selected bridges".
+        let indexed = (!include_unindexed)
+            .then(|| self.indexed_chains.configured_union())
+            .flatten();
+
+        let mut bridge_ids = parse_bridge_ids_csv(inner.bridge_ids.as_deref())?;
+        bridge_ids.sort_unstable();
+        bridge_ids.dedup();
+        // Current configured chains of the selected bridges, for zero-row
+        // candidates. Only meaningful (and only computed) for a non-empty
+        // selection; `StatsChainsScope::Bridges` requires it non-empty.
+        let selected_configured_chain_ids = if bridge_ids.is_empty() {
+            Vec::new()
+        } else {
+            self.indexed_chains.selected_configured_union(&bridge_ids)
+        };
+        let scope = if bridge_ids.is_empty() {
+            StatsChainsScope::Global
+        } else {
+            StatsChainsScope::Bridges {
+                bridge_ids: &bridge_ids,
+                configured_chain_ids: &selected_configured_chain_ids,
+            }
+        };
+
         let (rows, pagination) = self
             .stats
             .get_stats_chains(
+                scope,
                 chain_ids,
+                indexed.as_deref(),
                 StatsListQuery {
                     sort,
                     order,
@@ -240,18 +341,53 @@ impl InterchainStatisticsServiceImpl {
         inner: GetMessagePathsRequest,
         outgoing: bool,
     ) -> Result<Response<GetMessagePathsResponse>, Status> {
+        let include_unindexed = inner.include_unindexed_chains.unwrap_or(false);
         let from_date = parse_optional_utc_date(inner.from_date.as_deref())?;
         let to_date = parse_optional_utc_date(inner.to_date.as_deref())?;
-        let counterparty_ids = parse_chain_ids_csv(inner.counterparty_chain_ids.as_deref())?;
+        let counterparty_ids = parse_chain_ids_csv(
+            "counterparty_chain_ids",
+            inner.counterparty_chain_ids.as_deref(),
+        )?;
         let counterparty = (!counterparty_ids.is_empty()).then_some(counterparty_ids.as_slice());
+        let bridge_ids = parse_bridge_ids_csv(inner.bridge_ids.as_deref())?;
+        let bridges = (!bridge_ids.is_empty()).then_some(bridge_ids.as_slice());
+
+        // Per-bridge pairs plus the union *over the in-scope bridges*, derived
+        // from the same `pairs` value so the two restrictions can never
+        // disagree about which bridges are in scope (coding-task-2b item 7).
+        let pairs = (!include_unindexed)
+            .then(|| self.indexed_chains.configured_pairs(bridges))
+            .flatten();
+        let union = pairs.as_ref().map(|p| {
+            let mut ids: Vec<i64> = p.iter().flat_map(|(_, c)| c.iter().copied()).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        });
 
         let rows = if outgoing {
             self.stats
-                .get_outgoing_message_paths(inner.chain_id, from_date, to_date, counterparty)
+                .get_outgoing_message_paths(
+                    inner.chain_id,
+                    from_date,
+                    to_date,
+                    counterparty,
+                    bridges,
+                    pairs.as_deref(),
+                    union.as_deref(),
+                )
                 .await
         } else {
             self.stats
-                .get_incoming_message_paths(inner.chain_id, from_date, to_date, counterparty)
+                .get_incoming_message_paths(
+                    inner.chain_id,
+                    from_date,
+                    to_date,
+                    counterparty,
+                    bridges,
+                    pairs.as_deref(),
+                    union.as_deref(),
+                )
                 .await
         }
         .map_err(map_stats_error)?;
@@ -295,28 +431,6 @@ fn normalize_stats_q(input: Option<&str>) -> Option<&str> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-fn parse_chain_ids_csv(input: Option<&str>) -> Result<Vec<i64>, Status> {
-    let Some(input) = input.map(str::trim) else {
-        return Ok(Vec::new());
-    };
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    input
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            part.parse::<i64>().map_err(|_| {
-                Status::invalid_argument(format!(
-                    "invalid chain_ids value `{part}`: expected comma-separated int64 ids"
-                ))
-            })
-        })
-        .collect()
-}
-
 fn stats_chain_row_to_proto(row: StatsChainListRow) -> StatsChainRow {
     const UNKNOWN: &str = "Unknown";
     let name = if row.name.is_empty() {
@@ -351,11 +465,13 @@ fn bridged_row_to_proto(row: BridgedTokenListRow) -> StatsBridgedTokenRow {
             .into_iter()
             .map(|t| StatsBridgedTokenItem {
                 chain_id: t.chain_id.to_string(),
-                token_address: to_hex_prefixed(t.token_address.as_slice()),
+                token_address: (token_type_to_proto(&t.token_type) != TokenType::Native)
+                    .then(|| to_hex_prefixed(t.token_address.as_slice())),
                 name: t.name,
                 symbol: t.symbol,
                 icon_url: t.icon_url,
                 decimals: t.decimals.map(|d| d as u32),
+                r#type: token_type_to_proto(&t.token_type) as i32,
             })
             .collect(),
     }
@@ -371,29 +487,7 @@ fn map_stats_error(err: anyhow::Error) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_stats_q, parse_chain_ids_csv, parse_optional_utc_date};
-
-    #[test]
-    fn parse_chain_ids_csv_accepts_missing_and_empty() {
-        assert_eq!(parse_chain_ids_csv(None).unwrap(), Vec::<i64>::new());
-        assert_eq!(parse_chain_ids_csv(Some("")).unwrap(), Vec::<i64>::new());
-        assert_eq!(parse_chain_ids_csv(Some("   ")).unwrap(), Vec::<i64>::new());
-    }
-
-    #[test]
-    fn parse_chain_ids_csv_parses_comma_separated_ids() {
-        assert_eq!(
-            parse_chain_ids_csv(Some("123,456, 789")).unwrap(),
-            vec![123, 456, 789]
-        );
-    }
-
-    #[test]
-    fn parse_chain_ids_csv_rejects_invalid_values() {
-        let err = parse_chain_ids_csv(Some("123,abc")).expect_err("must reject invalid id");
-        assert_eq!(err.code(), tonic::Code::InvalidArgument);
-        assert!(err.message().contains("invalid chain_ids value `abc`"));
-    }
+    use super::{normalize_stats_q, parse_optional_utc_date};
 
     #[test]
     fn parse_optional_utc_date_accepts_valid_yyyy_mm_dd() {

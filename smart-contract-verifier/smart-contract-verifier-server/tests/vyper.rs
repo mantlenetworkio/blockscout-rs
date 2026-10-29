@@ -23,7 +23,7 @@ use std::{
     str::{from_utf8, FromStr},
     sync::Arc,
 };
-use tokio::sync::{OnceCell, Semaphore};
+use tokio::sync::OnceCell;
 use vyper_types::TestCase;
 
 async fn global_service() -> &'static Arc<VyperVerifierService> {
@@ -31,10 +31,16 @@ async fn global_service() -> &'static Arc<VyperVerifierService> {
     SERVICE
         .get_or_init(|| async {
             let settings = Settings::default();
-            let compilers_lock = Semaphore::new(settings.compilers.max_threads.get());
-            let service = VyperVerifierService::new(settings.vyper, Arc::new(compilers_lock))
-                .await
-                .expect("couldn't initialize the service");
+            let executor = Arc::new(
+                smart_contract_verifier::ConcurrencyLimitedCompilerExecutor::new(
+                    Arc::new(smart_contract_verifier::NativeCompilerExecutor::default()),
+                    settings.compilers.max_threads,
+                ),
+            );
+            let service =
+                VyperVerifierService::new_with_admitted_executor(settings.vyper, executor)
+                    .await
+                    .expect("couldn't initialize the service");
             Arc::new(service)
         })
         .await
@@ -149,7 +155,7 @@ fn validate_verification_response<T: TestCase>(
         serde_json::from_str(&verification_result.compiler_settings).unwrap_or_else(|_| {
             panic!(
                 "Compiler Settings deserialization failed: {}",
-                &verification_result.compiler_settings
+                verification_result.compiler_settings
             )
         });
     assert_eq!(
@@ -538,6 +544,16 @@ mod standard_json {
     async fn verify_contracts_with_integrity_hashes_inside_cbor_auxdata() {
         let test_case =
             vyper_types::from_file::<StandardJson>("standard_json_contracts_with_integrity_hashes");
+        test_success(test_case).await;
+    }
+
+    #[tokio::test]
+    async fn verify_success_with_search_paths_and_omitted_output_selection() {
+        // The input relies on `search_paths` to resolve library imports (snekmate) that are
+        // embedded in `sources`, and omits `outputSelection` entirely. The verifier must select
+        // the top-level contracts (excluding files under library search paths) so the contract
+        // is emitted and verified.
+        let test_case = vyper_types::from_file::<StandardJson>("standard_json_search_paths");
         test_success(test_case).await;
     }
 }
