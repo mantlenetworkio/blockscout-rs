@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::redundant_field_names)]
+
 use crate::conversion::{self};
 use async_trait::async_trait;
 use bens_logic::subgraph::SubgraphReader;

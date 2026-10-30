@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
-
+#![allow(clippy::all)]
 #![allow(
     clippy::derive_partial_eq_without_eq,
     // `tonic::Status` is ~176 bytes, which trips the lint in generated and http-client code.

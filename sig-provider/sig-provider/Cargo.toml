@@ -6,7 +6,7 @@ license = "LicenseRef-Blockscout"
 
 [dependencies]
 sig-provider-proto = { path = "../sig-provider-proto" }
-alloy-json-abi = { git = "https://github.com/alloy-rs/core", rev = "398d7e2", features = ["serde_json"] }
+alloy-json-abi = { version = "1.5.7", features = ["serde_json"] }
 tokio = "1"
 tokio-stream = "0.1"
 async-trait = "0.1"

@@ -85,7 +85,7 @@ mod tests {
             .get_or_init(|| async {
                 let tmp_dir = tempfile::tempdir().unwrap();
                 let url = DEFAULT_SOLIDITY_COMPILER_LIST.try_into().unwrap();
-                let fetcher = ListFetcher::new(url, tmp_dir.into_path(), None, None)
+                let fetcher = ListFetcher::new(url, tmp_dir.keep(), None, None)
                     .await
                     .expect("Fetch releases");
                 fetcher.fetch(&default_version()).await.unwrap()

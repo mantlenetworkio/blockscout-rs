@@ -334,7 +334,7 @@ fn try_decode_constructor_arguments(
     constructor: &alloy_json_abi::Constructor,
     data: &[u8],
 ) -> Result<Vec<alloy_dyn_abi::DynSolValue>, alloy_dyn_abi::Error> {
-    let decoded_input = constructor.abi_decode_input(data, true)?;
+    let decoded_input = constructor.abi_decode_input(data)?;
     let encoded_data = constructor.abi_encode_input(&decoded_input)?;
     if data != encoded_data {
         return Err(alloy_dyn_abi::Error::custom(

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 use alloy::{network::Ethereum, providers::DynProvider};
 use async_trait::async_trait;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
-#![allow(clippy::derive_partial_eq_without_eq)]
+#![allow(clippy::all)]
 pub mod blockscout {
     pub mod bens {
         pub mod v1 {

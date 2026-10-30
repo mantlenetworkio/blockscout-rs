@@ -27,9 +27,9 @@ actix-prost = { version = "0.3.0" }
 actix-prost-macros = { version = "0.3.0" }
 actix-prost-build = { version = "0.3.0" }
 actix-web = { version = "4" }
-alloy-dyn-abi = { version = "0.8.10" }
-alloy-json-abi = { version = "0.8.10" }
-alloy-primitives = { version = "0.8.10" }
+alloy-dyn-abi = { version = "0.8.26" }
+alloy-json-abi = { version = "0.8.26" }
+alloy-primitives = { version = "0.8.26" }
 amplify = { version = "4.7.0" }
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }

@@ -1,4 +1,4 @@
-type Domain @entity {
+type Domain @entity(immutable: false) {
   "The hash of the name (keccak256(domain + suffix))"
   id: ID!
   "The human readable name, if known. Unknown portions replaced with hash in square brackets (eg, foo.[1234].blue)"
@@ -66,7 +66,7 @@ interface DomainEvent {
   transactionID: Bytes!
 }
 
-type Transfer implements DomainEvent @entity {
+type Transfer implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -83,7 +83,7 @@ type Transfer implements DomainEvent @entity {
   to: Account!
 }
 
-type DomainRegistered implements DomainEvent @entity {
+type DomainRegistered implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -100,7 +100,7 @@ type DomainRegistered implements DomainEvent @entity {
   tokenId: BigInt!
 }
 
-type PrimaryDomainSet implements DomainEvent @entity {
+type PrimaryDomainSet implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -117,7 +117,7 @@ type PrimaryDomainSet implements DomainEvent @entity {
   domainName: String!
 }
 
-type PrimaryDomainReset implements DomainEvent @entity {
+type PrimaryDomainReset implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -132,7 +132,7 @@ type PrimaryDomainReset implements DomainEvent @entity {
   tokenId: BigInt!
 }
 
-type TokenSeized implements DomainEvent @entity {
+type TokenSeized implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -149,7 +149,7 @@ type TokenSeized implements DomainEvent @entity {
   tokenId: BigInt!
 }
 
-type NewOwner implements DomainEvent @entity {
+type NewOwner implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The parent domain of the domain name associated with the event"
@@ -164,7 +164,7 @@ type NewOwner implements DomainEvent @entity {
   owner: Account!
 }
 
-type NewResolver implements DomainEvent @entity {
+type NewResolver implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -177,7 +177,7 @@ type NewResolver implements DomainEvent @entity {
   resolver: Resolver!
 }
 
-type NewTTL implements DomainEvent @entity {
+type NewTTL implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -190,7 +190,7 @@ type NewTTL implements DomainEvent @entity {
   ttl: BigInt!
 }
 
-type WrappedTransfer implements DomainEvent @entity {
+type WrappedTransfer implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -203,7 +203,7 @@ type WrappedTransfer implements DomainEvent @entity {
   owner: Account!
 }
 
-type NameWrapped implements DomainEvent @entity {
+type NameWrapped implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the wrapped domain"
   id: ID!
   "The domain name associated with the wrapped domain"
@@ -222,7 +222,7 @@ type NameWrapped implements DomainEvent @entity {
   expiryDate: BigInt!
 }
 
-type NameUnwrapped implements DomainEvent @entity {
+type NameUnwrapped implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -235,7 +235,7 @@ type NameUnwrapped implements DomainEvent @entity {
   owner: Account!
 }
 
-type FusesSet implements DomainEvent @entity {
+type FusesSet implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -248,7 +248,7 @@ type FusesSet implements DomainEvent @entity {
   fuses: Int!
 }
 
-type ExpiryExtended implements DomainEvent @entity {
+type ExpiryExtended implements DomainEvent @entity(immutable: false) {
   "The unique identifier of the event"
   id: ID!
   "The domain name associated with the event"
@@ -261,7 +261,7 @@ type ExpiryExtended implements DomainEvent @entity {
   expiryDate: BigInt!
 }
 
-type Registration @entity {
+type Registration @entity(immutable: false) {
   "The unique identifier of the registration"
   id: ID!
   "The domain name associated with the registration"
@@ -291,7 +291,7 @@ interface RegistrationEvent {
   transactionID: Bytes!
 }
 
-type NameRegistered implements RegistrationEvent @entity {
+type NameRegistered implements RegistrationEvent @entity(immutable: false) {
   "The unique identifier of the NameRegistered event"
   id: ID!
   "The registration associated with the event"
@@ -306,7 +306,7 @@ type NameRegistered implements RegistrationEvent @entity {
   expiryDate: BigInt
 }
 
-type NameRenewed implements RegistrationEvent @entity {
+type NameRenewed implements RegistrationEvent @entity(immutable: false) {
   "The unique identifier of the NameRenewed event"
   id: ID!
   "The registration associated with the event"
@@ -319,7 +319,7 @@ type NameRenewed implements RegistrationEvent @entity {
   expiryDate: BigInt!
 }
 
-type NameTransferred implements RegistrationEvent @entity {
+type NameTransferred implements RegistrationEvent @entity(immutable: false) {
   "The ID of the event"
   id: ID!
   "The registration associated with the event"
@@ -332,7 +332,7 @@ type NameTransferred implements RegistrationEvent @entity {
   newOwner: Account!
 }
 
-type WrappedDomain @entity {
+type WrappedDomain @entity(immutable: false) {
   "unique identifier for each instance of the WrappedDomain entity"
   id: ID!
   "The domain that is wrapped by this WrappedDomain"
@@ -347,7 +347,7 @@ type WrappedDomain @entity {
   name: String
 }
 
-type Account @entity {
+type Account @entity(immutable: false) {
   "The unique identifier for the account"
   id: ID!
   "The domains owned by the account"
@@ -360,7 +360,7 @@ type Account @entity {
   primaryDomain: Domain
 }
 
-type PrimaryNameRecord @entity {
+type PrimaryNameRecord @entity(immutable: false) {
   "Unique identifier (resolved address)"
   id: ID!
   "The resolved address"
@@ -371,14 +371,14 @@ type PrimaryNameRecord @entity {
   domain_name: String
 }
 
-type TokenIdToDomain @entity {
+type TokenIdToDomain @entity(immutable: false) {
   "The token ID (as string)"
   id: ID!
   "The domain associated with this token ID"
   domain: Domain!
 }
 
-type Resolver @entity {
+type Resolver @entity(immutable: false) {
   "The unique identifier for this resolver, which is a concatenation of the resolver address and the domain namehash"
   id: ID!
   "The domain that this resolver is associated with"
@@ -408,7 +408,7 @@ interface ResolverEvent {
   transactionID: Bytes!
 }
 
-type AddrChanged implements ResolverEvent @entity {
+type AddrChanged implements ResolverEvent @entity(immutable: false) {
   "Unique identifier for this event"
   id: ID!
   "The resolver associated with this event"
@@ -421,7 +421,7 @@ type AddrChanged implements ResolverEvent @entity {
   addr: Account!
 }
 
-type MulticoinAddrChanged implements ResolverEvent @entity {
+type MulticoinAddrChanged implements ResolverEvent @entity(immutable: false) {
   "Unique identifier for the event"
   id: ID!
   "Resolver associated with this event"
@@ -436,7 +436,7 @@ type MulticoinAddrChanged implements ResolverEvent @entity {
   addr: Bytes!
 }
 
-type NameChanged implements ResolverEvent @entity {
+type NameChanged implements ResolverEvent @entity(immutable: false) {
   "Concatenation of block number and log ID"
   id: ID!
   "Used to derive relationships to Resolvers"
@@ -449,7 +449,7 @@ type NameChanged implements ResolverEvent @entity {
   name: String!
 }
 
-type AbiChanged implements ResolverEvent @entity {
+type AbiChanged implements ResolverEvent @entity(immutable: false) {
   "Concatenation of block number and log ID"
   id: ID!
   "Used to derive relationships to Resolvers"
@@ -462,7 +462,7 @@ type AbiChanged implements ResolverEvent @entity {
   contentType: BigInt!
 }
 
-type PubkeyChanged implements ResolverEvent @entity {
+type PubkeyChanged implements ResolverEvent @entity(immutable: false) {
   "Concatenation of block number and log ID"
   id: ID!
   "Used to derive relationships to Resolvers"
@@ -477,7 +477,7 @@ type PubkeyChanged implements ResolverEvent @entity {
   y: Bytes!
 }
 
-type TextChanged implements ResolverEvent @entity {
+type TextChanged implements ResolverEvent @entity(immutable: false) {
   "Concatenation of block number and log ID"
   id: ID!
   "Used to derive relationships to Resolvers"
@@ -492,7 +492,7 @@ type TextChanged implements ResolverEvent @entity {
   value: String
 }
 
-type ContenthashChanged implements ResolverEvent @entity {
+type ContenthashChanged implements ResolverEvent @entity(immutable: false) {
   "Concatenation of block number and log ID"
   id: ID!
   "Used to derive relationships to Resolvers"
@@ -505,7 +505,7 @@ type ContenthashChanged implements ResolverEvent @entity {
   hash: Bytes!
 }
 
-type InterfaceChanged implements ResolverEvent @entity {
+type InterfaceChanged implements ResolverEvent @entity(immutable: false) {
   "Concatenation of block number and log ID"
   id: ID!
   "Used to derive relationships to Resolvers"
@@ -520,7 +520,7 @@ type InterfaceChanged implements ResolverEvent @entity {
   implementer: Bytes!
 }
 
-type AuthorisationChanged implements ResolverEvent @entity {
+type AuthorisationChanged implements ResolverEvent @entity(immutable: false) {
   "Unique identifier for this event"
   id: ID!
   "The resolver associated with this event"
@@ -537,7 +537,7 @@ type AuthorisationChanged implements ResolverEvent @entity {
   isAuthorized: Boolean!
 }
 
-type VersionChanged implements ResolverEvent @entity {
+type VersionChanged implements ResolverEvent @entity(immutable: false) {
   "Unique identifier for this event"
   id: ID!
   "The resolver associated with this event"

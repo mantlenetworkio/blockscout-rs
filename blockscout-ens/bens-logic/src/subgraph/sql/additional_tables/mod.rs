@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 mod addr2name;
 mod cache_views;
 mod primary_name_record;

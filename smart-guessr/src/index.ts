@@ -37,10 +37,11 @@ export function initApp(port: string | number) {
                 address: t.String(),
                 provider: t.String(),
             }),
-            beforeHandle({ error, query }) {
+            beforeHandle({ set, query }) {
                 query.address = normalizeAddress(query.address);
                 if (!ethers.isAddress(query.address)) {
-                    return error(400, "Invalid address value")
+                    set.status = 400;
+                    return "Invalid address value";
                 }
             }
         })

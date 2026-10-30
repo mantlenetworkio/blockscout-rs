@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
 pub mod eth_bytecode_db;
 pub mod fourbyte;
 pub mod sigeth;

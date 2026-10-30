@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
+
 use crate::{
     compiler::{
         CommandArgument, CompactVersion, CompilerExecutor, CompilerInvocation, DetailedVersion,

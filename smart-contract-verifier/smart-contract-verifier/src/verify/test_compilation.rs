@@ -12,7 +12,7 @@ use std::{num::NonZeroUsize, sync::Arc};
 async fn compilers<Compiler: EvmCompiler>(list_url: &str) -> EvmCompilersPool<Compiler> {
     let tempdir = tempfile::tempdir().unwrap();
     let url = list_url.try_into().expect("Getting url");
-    let fetcher = ListFetcher::<DetailedVersion>::new(url, tempdir.into_path(), None, None)
+    let fetcher = ListFetcher::<DetailedVersion>::new(url, tempdir.keep(), None, None)
         .await
         .expect("Fetch releases");
     EvmCompilersPool::new_with_admitted_executor(

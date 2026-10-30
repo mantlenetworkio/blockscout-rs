@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
+#![allow(clippy::double_must_use)]
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use compiler_runner::{sha256_file, FileFingerprint};

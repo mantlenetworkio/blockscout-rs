@@ -186,7 +186,7 @@ mod verified_contracts {
                 return Ok(None);
             }
 
-            let items = self.items.drain(..).collect::<Vec<_>>();
+            let items = std::mem::take(&mut self.items);
 
             if let Some(next_page_params) = &self.next_page_params {
                 let response = Self::load_next_page(
