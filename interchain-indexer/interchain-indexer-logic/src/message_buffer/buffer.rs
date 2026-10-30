@@ -15,7 +15,10 @@ use super::{
     metrics,
     types::{Consolidate, Key},
 };
-use crate::{InterchainDatabase, StatsService, TokenInfoService, settings::MessageBufferSettings};
+use crate::{
+    IndexedChains, InterchainDatabase, StatsService, TokenInfoService,
+    settings::MessageBufferSettings,
+};
 
 /// Tiered message buffer with hot (memory) and cold (Postgres) storage.
 ///
@@ -40,7 +43,12 @@ impl<T: Consolidate + Default> MessageBuffer<T> {
     #[allow(dead_code)] // embedders/tests; production indexer uses [`Self::new_with_stats`]
     pub fn new(db: InterchainDatabase, config: MessageBufferSettings) -> Arc<Self> {
         Self::new_with_stats(
-            Arc::new(StatsService::new(Arc::new(db), None, Default::default())),
+            Arc::new(StatsService::new(
+                Arc::new(db),
+                None,
+                Default::default(),
+                IndexedChains::AllIndexed,
+            )),
             config,
         )
     }
@@ -66,6 +74,7 @@ impl<T: Consolidate + Default> MessageBuffer<T> {
                 Arc::new(db),
                 token_info,
                 Default::default(),
+                IndexedChains::AllIndexed,
             )),
             config,
         )
@@ -142,6 +151,13 @@ impl<T: Consolidate + Default> MessageBuffer<T> {
         Ok(())
     }
 
+    /// Test-only: whether `key` currently has a hot-tier entry. Lets tests outside
+    /// `message_buffer` assert eviction/absence without widening `inner`.
+    #[cfg(test)]
+    pub(crate) fn contains_hot(&self, key: &Key) -> bool {
+        self.inner.contains_key(key)
+    }
+
     /// Start the background maintenance loop.
     pub async fn start(self: Arc<Self>) -> Result<JoinHandle<()>> {
         let buffer = Arc::clone(&self);
@@ -187,6 +203,7 @@ mod tests {
 
             Ok(Some(ConsolidatedMessage {
                 is_final: self.is_final,
+                replace_existing: false,
                 message: interchain_indexer_entity::crosschain_messages::ActiveModel {
                     id: ActiveValue::Set(key.message_id),
                     bridge_id: ActiveValue::Set(key.bridge_id as i32),
@@ -195,6 +212,8 @@ mod tests {
                     ..Default::default()
                 },
                 transfers: vec![],
+                amb_confirmations: vec![],
+                amb_anomalies: vec![],
             }))
         }
     }

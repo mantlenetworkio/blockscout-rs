@@ -30,10 +30,14 @@ pub struct Model {
     #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
     pub payload: Option<Vec<u8>>,
     pub stats_processed: i16,
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    pub protocol_metadata: Option<Json>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
+    #[sea_orm(has_many = "super::amb_messages_confirmations::Entity")]
+    AmbMessagesConfirmations,
     #[sea_orm(
         belongs_to = "super::bridges::Entity",
         from = "Column::BridgeId",
@@ -60,6 +64,12 @@ pub enum Relation {
     Chains1,
     #[sea_orm(has_many = "super::crosschain_transfers::Entity")]
     CrosschainTransfers,
+}
+
+impl Related<super::amb_messages_confirmations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AmbMessagesConfirmations.def()
+    }
 }
 
 impl Related<super::bridges::Entity> for Entity {

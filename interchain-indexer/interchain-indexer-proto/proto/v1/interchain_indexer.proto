@@ -40,6 +40,7 @@ option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
 
 service InterchainService {
   rpc GetChains(GetChainsRequest) returns (GetChainsResponse) {}
+  rpc GetBridges(GetBridgesRequest) returns (GetBridgesResponse) {}
   rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse) {}
   rpc GetMessageDetails(GetMessageDetailsRequest) returns (InterchainMessage) {}
   rpc GetMessagesByTransaction(GetMessagesByTransactionRequest) returns (GetMessagesResponse) {}
@@ -51,6 +52,13 @@ service InterchainService {
 }
 
 
+// Cursor for list pagination (request input and next/prev response params).
+// Page tokens and raw cursor fields are only valid within the same complete
+// filter combination (`home_chain_id`, `counterparty_chain_ids`,
+// `src_chain_ids`, `dst_chain_ids`, `bridge_ids`, and any tx_hash/address
+// scope). The cursor does not encode these filters and is not re-validated
+// against them, so changing any filter mid-pagination is unsupported and
+// yields undefined results; callers must restart pagination when filters change.
 message Pagination {
   optional string page_token = 1;
   optional uint64 timestamp = 2;
@@ -76,10 +84,39 @@ message GetMessagesRequest {
   optional string message_id = 6; // Raw pagination field
   optional uint32 bridge_id = 7;  // Raw pagination field
   optional string direction = 8;  // Raw pagination field
+
+  // Filter: only messages touching this chain (src = N OR dst = N).
+  optional int64 home_chain_id = 9;
+  // Comma-separated chain ids. With home_chain_id: restricts the other
+  // endpoint (peer) to this set. Without home_chain_id: both endpoints
+  // must be within the set. Messages with unknown (NULL) destination are
+  // excluded whenever this set is present.
+  optional string counterparty_chain_ids = 10;
+  // Comma-separated bridge ids (see GET /api/v1/interchain/bridges).
+  optional string bridge_ids = 11;
+  // Comma-separated source chain ids. Independent directional filter that
+  // narrows the focal predicate through AND (matches messages whose
+  // src_chain_id is in this set). src_chain_ids and dst_chain_ids are
+  // independent direction sets; both apply when both are present.
+  optional string src_chain_ids = 12;
+  // Comma-separated destination chain ids. Independent directional filter that
+  // narrows the focal predicate through AND (matches messages whose
+  // dst_chain_id is in this set). A destination filter excludes messages with a
+  // NULL destination through normal SQL semantics.
+  optional string dst_chain_ids = 13;
+
+  // When true, also return messages/transfers touching a chain that this
+  // record's own bridge does not index (such a record can never be observed
+  // from both sides). Default (absent or false) hides them.
+  optional bool include_unindexed_chains = 14;
 }
 
 message GetMessageDetailsRequest {
   string message_id = 1;
+  // Optional bridge qualifier. Required when message_id exists in more than one
+  // bridge. An ambiguous unqualified lookup returns gRPC FailedPrecondition
+  // (HTTP 400) with instruction to provide bridge_id.
+  optional uint32 bridge_id = 2;
 }
 
 message GetMessagesByTransactionRequest {
@@ -98,6 +135,31 @@ message GetMessagesByTransactionRequest {
   optional string message_id = 6; // Raw pagination field
   optional uint32 bridge_id = 7;  // Raw pagination field
   optional string direction = 8;  // Raw pagination field
+
+  // Filter: only messages touching this chain (src = N OR dst = N).
+  optional int64 home_chain_id = 9;
+  // Comma-separated chain ids. With home_chain_id: restricts the other
+  // endpoint (peer) to this set. Without home_chain_id: both endpoints
+  // must be within the set. Messages with unknown (NULL) destination are
+  // excluded whenever this set is present.
+  optional string counterparty_chain_ids = 10;
+  // Comma-separated bridge ids (see GET /api/v1/interchain/bridges).
+  optional string bridge_ids = 11;
+  // Comma-separated source chain ids. Independent directional filter that
+  // narrows the focal predicate through AND (matches messages whose
+  // src_chain_id is in this set). src_chain_ids and dst_chain_ids are
+  // independent direction sets; both apply when both are present.
+  optional string src_chain_ids = 12;
+  // Comma-separated destination chain ids. Independent directional filter that
+  // narrows the focal predicate through AND (matches messages whose
+  // dst_chain_id is in this set). A destination filter excludes messages with a
+  // NULL destination through normal SQL semantics.
+  optional string dst_chain_ids = 13;
+
+  // When true, also return messages/transfers touching a chain that this
+  // record's own bridge does not index (such a record can never be observed
+  // from both sides). Default (absent or false) hides them.
+  optional bool include_unindexed_chains = 14;
 }
 
 message GetMessagesByAddressRequest {
@@ -116,6 +178,31 @@ message GetMessagesByAddressRequest {
   optional string message_id = 6; // Raw pagination field
   optional uint32 bridge_id = 7;  // Raw pagination field
   optional string direction = 8;  // Raw pagination field
+
+  // Filter: only messages touching this chain (src = N OR dst = N).
+  optional int64 home_chain_id = 9;
+  // Comma-separated chain ids. With home_chain_id: restricts the other
+  // endpoint (peer) to this set. Without home_chain_id: both endpoints
+  // must be within the set. Messages with unknown (NULL) destination are
+  // excluded whenever this set is present.
+  optional string counterparty_chain_ids = 10;
+  // Comma-separated bridge ids (see GET /api/v1/interchain/bridges).
+  optional string bridge_ids = 11;
+  // Comma-separated source chain ids. Independent directional filter that
+  // narrows the focal predicate through AND (matches messages whose
+  // src_chain_id is in this set). src_chain_ids and dst_chain_ids are
+  // independent direction sets; both apply when both are present.
+  optional string src_chain_ids = 12;
+  // Comma-separated destination chain ids. Independent directional filter that
+  // narrows the focal predicate through AND (matches messages whose
+  // dst_chain_id is in this set). A destination filter excludes messages with a
+  // NULL destination through normal SQL semantics.
+  optional string dst_chain_ids = 13;
+
+  // When true, also return messages/transfers touching a chain that this
+  // record's own bridge does not index (such a record can never be observed
+  // from both sides). Default (absent or false) hides them.
+  optional bool include_unindexed_chains = 14;
 }
 
 message AddressInfo {
@@ -127,6 +214,8 @@ message BridgeInfo {
   string name = 1;
   optional string ui_url = 2;
   optional string docs_url = 3;
+  // Bridge id usable in bridge_ids filters.
+  uint32 id = 4;
 }
 
 message ChainInfo {
@@ -139,16 +228,72 @@ message ChainInfo {
   optional string custom_token_route = 7;
 }
 
-message GetChainsRequest {}
+message GetChainsRequest {
+  // When true, also return chains that no configured bridge indexes.
+  // Default (absent or false) omits them.
+  optional bool include_unindexed_chains = 1;
+  // Optional comma-separated chain ids filter, for example `123,456`.
+  // When absent or empty, all known chains are returned. Selects the returned
+  // rows by chain id. Unknown ids match nothing; duplicates are idempotent.
+  // Malformed or out-of-int64-range values return InvalidArgument.
+  optional string chain_ids = 2;
+  // Optional comma-separated bridge ids filter, for example `1,2`
+  // (see GET /api/v1/interchain/bridges). Restricts the response to chains the
+  // selected bridges index today -- the union of their
+  // `Bridge.indexed_chain_ids`, derived from the in-memory bridges config,
+  // never from historical `bridge_contracts` rows.
+  // The returned rows are that union INTERSECTED with the chain directory this
+  // endpoint serves, which is upserted from `chains.json`. The two coincide in
+  // practice, but a chain that a selected bridge indexes and that has no entry
+  // in the chain directory is listed by GET /api/v1/interchain/bridges and is
+  // not returned here, because there is no chain row to return.
+  // When absent or empty, no bridge restriction is applied. A non-empty
+  // selection naming only unknown, removed, or contract-less bridges returns an
+  // EMPTY list, not the full directory. Malformed or out-of-int32-range values
+  // return InvalidArgument; duplicates are idempotent. Composes with
+  // `chain_ids` and `include_unindexed_chains` through AND.
+  //
+  // NOTE: this deliberately differs from GET /api/v1/stats/chains?bridge_ids=,
+  // which additionally admits a chain with retained per-bridge stats history
+  // for a selected bridge. For a bridge removed from configuration,
+  // /stats/chains can still list its historical chains while this endpoint
+  // lists none. That is by design: this endpoint applies the same
+  // currently-configured membership that `Bridge.indexed_chain_ids` reports.
+  optional string bridge_ids = 3;
+}
 
 message GetChainsResponse {
   repeated ChainInfo items = 1;
+}
+
+message GetBridgesRequest {}
+
+message Bridge {
+  uint32 id = 1;
+  string name = 2;
+  // "lockmint" | "avalanche_native" | "amb"
+  optional string type = 3;
+  bool enabled = 4;
+  optional string ui_url = 5;
+  optional string docs_url = 6;
+  // Chain ids this bridge actually indexes today, sorted ascending. Derived
+  // from the in-memory bridges config (`IndexedChains`), not from historical
+  // `bridge_contracts` rows, so a bridge removed from config but still
+  // present in the `bridges` table (upserts never delete) reports an empty
+  // list here rather than stale contract history.
+  // The ids are decimal strings, matching `ChainInfo.id`.
+  repeated string indexed_chain_ids = 7;
+}
+
+message GetBridgesResponse {
+  repeated Bridge items = 1;
 }
 
 enum MessageStatus {
   MESSAGE_STATUS_INITIATED = 0;
   MESSAGE_STATUS_COMPLETED = 1;
   MESSAGE_STATUS_FAILED = 2;
+  MESSAGE_STATUS_READY_TO_CLAIM = 3;
 }
 
 message InterchainMessage {
@@ -167,9 +312,17 @@ message InterchainMessage {
   optional string destination_transaction_hash = 11;
   
   optional string payload = 12;
-  map<string, string> extra = 13; // additional parsed data
+  // Additional parsed data, keyed by concept namespace. Each value is an
+  // arbitrary JSON object whose shape belongs to that namespace, so a new
+  // concept is a new key rather than a new flat key prefix.
+  google.protobuf.Struct extra = 13;
 
   repeated InterchainTransfer transfers = 14;
+
+  // True when this record's source or destination chain is not indexed by its
+  // own bridge (an unknown destination also counts). Such a record can never be
+  // observed from both sides.
+  bool has_unindexed_chain = 15;
 }
 
 message GetMessagesResponse {
@@ -195,6 +348,30 @@ message GetTransfersRequest {
   optional uint32 bridge_id = 7;  // Raw pagination field
   optional uint64 index = 8;      // Raw pagination field
   optional string direction = 9;  // Raw pagination field
+
+  // Filter: only transfers touching this chain (token_src = N OR token_dst = N).
+  // Matched by the transfer's own source/destination chains.
+  optional int64 home_chain_id = 10;
+  // Comma-separated chain ids. With home_chain_id: restricts the other
+  // endpoint (peer) to this set. Without home_chain_id: both endpoints
+  // must be within the set. Matched by the transfer's own source/destination chains.
+  optional string counterparty_chain_ids = 11;
+  // Comma-separated bridge ids (see GET /api/v1/interchain/bridges).
+  optional string bridge_ids = 12;
+  // Comma-separated source chain ids. Independent directional filter that
+  // narrows the focal predicate through AND. Matched by the transfer's own token
+  // source chain (token_src_chain_id). src_chain_ids and dst_chain_ids are
+  // independent direction sets; both apply when both are present.
+  optional string src_chain_ids = 13;
+  // Comma-separated destination chain ids. Independent directional filter that
+  // narrows the focal predicate through AND. Matched by the transfer's own token
+  // destination chain (token_dst_chain_id).
+  optional string dst_chain_ids = 14;
+
+  // When true, also return messages/transfers touching a chain that this
+  // record's own bridge does not index (such a record can never be observed
+  // from both sides). Default (absent or false) hides them.
+  optional bool include_unindexed_chains = 15;
 }
 
 message GetTransfersByTransactionRequest {
@@ -214,6 +391,30 @@ message GetTransfersByTransactionRequest {
   optional uint32 bridge_id = 7;  // Raw pagination field
   optional uint64 index = 8;      // Raw pagination field
   optional string direction = 9;  // Raw pagination field
+
+  // Filter: only transfers touching this chain (token_src = N OR token_dst = N).
+  // Matched by the transfer's own source/destination chains.
+  optional int64 home_chain_id = 10;
+  // Comma-separated chain ids. With home_chain_id: restricts the other
+  // endpoint (peer) to this set. Without home_chain_id: both endpoints
+  // must be within the set. Matched by the transfer's own source/destination chains.
+  optional string counterparty_chain_ids = 11;
+  // Comma-separated bridge ids (see GET /api/v1/interchain/bridges).
+  optional string bridge_ids = 12;
+  // Comma-separated source chain ids. Independent directional filter that
+  // narrows the focal predicate through AND. Matched by the transfer's own token
+  // source chain (token_src_chain_id). src_chain_ids and dst_chain_ids are
+  // independent direction sets; both apply when both are present.
+  optional string src_chain_ids = 13;
+  // Comma-separated destination chain ids. Independent directional filter that
+  // narrows the focal predicate through AND. Matched by the transfer's own token
+  // destination chain (token_dst_chain_id).
+  optional string dst_chain_ids = 14;
+
+  // When true, also return messages/transfers touching a chain that this
+  // record's own bridge does not index (such a record can never be observed
+  // from both sides). Default (absent or false) hides them.
+  optional bool include_unindexed_chains = 15;
 }
 
 message GetTransfersByAddressRequest {
@@ -233,15 +434,50 @@ message GetTransfersByAddressRequest {
   optional uint32 bridge_id = 7;  // Raw pagination field
   optional uint64 index = 8;      // Raw pagination field
   optional string direction = 9;  // Raw pagination field
+
+  // Filter: only transfers touching this chain (token_src = N OR token_dst = N).
+  // Matched by the transfer's own source/destination chains.
+  optional int64 home_chain_id = 10;
+  // Comma-separated chain ids. With home_chain_id: restricts the other
+  // endpoint (peer) to this set. Without home_chain_id: both endpoints
+  // must be within the set. Matched by the transfer's own source/destination chains.
+  optional string counterparty_chain_ids = 11;
+  // Comma-separated bridge ids (see GET /api/v1/interchain/bridges).
+  optional string bridge_ids = 12;
+  // Comma-separated source chain ids. Independent directional filter that
+  // narrows the focal predicate through AND. Matched by the transfer's own token
+  // source chain (token_src_chain_id). src_chain_ids and dst_chain_ids are
+  // independent direction sets; both apply when both are present.
+  optional string src_chain_ids = 13;
+  // Comma-separated destination chain ids. Independent directional filter that
+  // narrows the focal predicate through AND. Matched by the transfer's own token
+  // destination chain (token_dst_chain_id).
+  optional string dst_chain_ids = 14;
+
+  // When true, also return messages/transfers touching a chain that this
+  // record's own bridge does not index (such a record can never be observed
+  // from both sides). Default (absent or false) hides them.
+  optional bool include_unindexed_chains = 15;
 }
 
 message TokenInfo {
+  // Token kind. UNSPECIFIED is the proto3 default and is never returned.
+  enum TokenType {
+    UNSPECIFIED = 0;
+    ERC20 = 1;
+    NATIVE = 2;
+    ERC721 = 3;
+    ERC1155 = 4;
+  }
+
   reserved 1; // chain_id moved to InterchainTransfer
-  string address_hash = 2;
+  // Null for a native token (`type == NATIVE`), which has no contract address.
+  optional string address_hash = 2;
   optional string name = 3;
   optional string symbol = 4;
   optional string decimals = 5;
   optional string icon_url = 6;
+  TokenType type = 7;
 }
 
 message InterchainTransfer {
@@ -264,7 +500,11 @@ message InterchainTransfer {
   optional string destination_transaction_hash = 11;
   optional AddressInfo recipient = 12;
   optional string receive_timestamp = 13;
-  
+
+  // True when this record's source or destination chain is not indexed by its
+  // own bridge (an unknown destination also counts). Such a record can never be
+  // observed from both sides.
+  bool has_unindexed_chain = 16;
 }
 
 message GetTransfersResponse {

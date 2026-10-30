@@ -30,8 +30,10 @@ impl ConfigSettings for Settings {
 #[serde(default, deny_unknown_fields)]
 pub struct SourcesSettings {
     pub fourbyte: url::Url,
-    pub openchain: url::Url,
-    pub sigeth: Option<url::Url>,
+    /// Also accepted as `openchain`, so deployments that configure
+    /// `SIG_PROVIDER__SOURCES__OPENCHAIN` keep working.
+    #[serde(alias = "openchain")]
+    pub sigeth: url::Url,
     pub eth_bytecode_db: EthBytecodeDbSettings,
 }
 
@@ -39,8 +41,7 @@ impl Default for SourcesSettings {
     fn default() -> Self {
         Self {
             fourbyte: url::Url::parse("https://www.4byte.directory/").unwrap(),
-            openchain: url::Url::parse("https://api.4byte.sourcify.dev/").unwrap(),
-            sigeth: None,
+            sigeth: url::Url::parse("https://api.4byte.sourcify.dev/").unwrap(),
             eth_bytecode_db: Default::default(),
         }
     }

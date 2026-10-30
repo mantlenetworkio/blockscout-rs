@@ -7,32 +7,58 @@
 //! we need convert functions for CompilerInput and CompilerOutput.
 
 use super::solc_compiler::SolcInput;
-use foundry_compilers::{
-    artifacts::solc,
-    error::{SolcError, SolcIoError},
-};
-use std::{collections::BTreeMap, path::Path, process::Stdio};
-use tokio::process::Command;
+use crate::{CommandArgument, CompilerExecutor, CompilerInvocation, JobFile};
+use foundry_compilers_artifacts::solc;
+use foundry_compilers_core::error::SolcError;
+use std::{collections::BTreeMap, path::Path};
 
 pub async fn compile_using_cli(
+    executor: &dyn CompilerExecutor,
     compiler_path: &Path,
     input: &SolcInput,
 ) -> Result<solc::CompilerOutput, SolcError> {
     let input = &input.0;
     let input_args = types::InputArgs::from(input);
     let input_files = types::InputFiles::try_from_compiler_input(input).await?;
-    let output = Command::new(compiler_path)
-        .args(input_args.build())
-        .args(input_files.build()?)
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .output()
+    let mut invocation = CompilerInvocation::new(
+        JobFile::executable("compiler", "bin/solc", compiler_path)
+            .map_err(|err| SolcError::Message(err.to_string()))?,
+        input_args
+            .build()
+            .into_iter()
+            .map(CommandArgument::literal)
+            .collect(),
+        Vec::new(),
+    );
+    for (index, file_path) in input_files.build()?.iter().enumerate() {
+        let relative_path = file_path
+            .strip_prefix(input_files.files_dir.path())
+            .map_err(|_| SolcError::Message("source file has unexpected prefix".into()))?;
+        let file_id = format!("source-{index}");
+        invocation = invocation.with_file(
+            JobFile::regular_file(
+                &file_id,
+                Path::new("sources").join(relative_path),
+                file_path,
+            )
+            .map_err(|err| SolcError::Message(err.to_string()))?,
+        );
+        invocation = invocation.with_argument(CommandArgument::file(file_id));
+    }
+    let output = executor
+        .execute(invocation)
         .await
-        .map_err(|err| SolcError::Io(SolcIoError::new(err, compiler_path)))?;
+        .map_err(|err| SolcError::Message(err.to_string()))?;
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let compiler_output = if output.stderr.is_empty() {
-        let output_json: types::OutputJson = serde_json::from_slice(output.stdout.as_slice())?;
+        if output.exit_code != 0 {
+            return Err(SolcError::Message(format!(
+                "solc exited with code {}",
+                output.exit_code
+            )));
+        }
+        let output_json: types::OutputJson = serde_json::from_slice(output.stdout.as_ref())?;
         solc::CompilerOutput::try_from(types::ConvertibleOutput {
             output_json,
             parent_dir: input_files.files_dir.path(),
@@ -63,7 +89,8 @@ fn compiler_error(message: String) -> solc::error::Error {
 
 mod types {
     use super::serde_helpers;
-    use foundry_compilers::{artifacts::solc, error::SolcError};
+    use foundry_compilers_artifacts::solc;
+    use foundry_compilers_core::error::SolcError;
     use serde::{Deserialize, Serialize};
     use std::{
         collections::{BTreeMap, HashMap},
@@ -139,16 +166,7 @@ mod types {
                     tempfile::tempdir().map_err(|e| SolcError::Message(e.to_string()))?;
                 let mut file_names = Vec::new();
                 for (name, source) in input.sources.iter() {
-                    let file_path = files_dir.path().join(name);
-
-                    // we don't allow any parent dir components,
-                    // as otherwise user may create something outside temporary files_dir
-                    if Self::contains_parent_dir(&file_path) {
-                        return Err(SolcError::Message(format!(
-                            "{} contains parent dir component",
-                            file_path.to_string_lossy()
-                        )));
-                    }
+                    let file_path = Self::source_file_path(files_dir.path(), name)?;
 
                     // name itself may contain some paths inside
                     let prefix = file_path.parent();
@@ -185,9 +203,38 @@ mod types {
                 })
         }
 
-        fn contains_parent_dir(path: &Path) -> bool {
-            path.components()
-                .any(|comp| matches!(comp, Component::ParentDir))
+        pub(super) fn source_file_path(
+            files_dir: &Path,
+            name: &Path,
+        ) -> Result<PathBuf, SolcError> {
+            let reject = |reason: &str| {
+                Err(SolcError::Message(format!(
+                    "invalid source file name \"{}\": {reason}",
+                    name.display()
+                )))
+            };
+
+            for component in name.components() {
+                match component {
+                    // `.` is a no-op, `Path` normalizes it away on comparison
+                    Component::Normal(_) | Component::CurDir => {}
+                    Component::ParentDir => return reject("contains a parent dir component"),
+                    // a leading `/` makes the name
+                    // absolute, which would discard `files_dir`
+                    Component::RootDir | Component::Prefix(_) => {
+                        return reject("must be a relative path")
+                    }
+                }
+            }
+
+            // a name made up solely of `.` components (including "") resolves to
+            // `files_dir` itself, which is a directory and not a source file.
+            // `Components` drops trailing `.`, so a valid name must end in `Normal`
+            if !matches!(name.components().next_back(), Some(Component::Normal(_))) {
+                return reject("does not name a file");
+            }
+
+            Ok(files_dir.join(name))
         }
     }
 
@@ -335,7 +382,7 @@ mod serde_helpers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::{DetailedVersion, Fetcher, ListFetcher};
+    use crate::compiler::{DetailedVersion, Fetcher, ListFetcher, NativeCompilerExecutor};
     use foundry_compilers::Artifact;
     use hex::ToHex;
     use pretty_assertions::assert_eq;
@@ -494,6 +541,47 @@ mod tests {
     }
 
     #[test]
+    fn source_file_path_accepts_relative_names() {
+        let dir = PathBuf::from("/files_dir");
+        for (name, expected) in [
+            ("a.sol", "/files_dir/a.sol"),
+            ("./a.sol", "/files_dir/a.sol"),
+            ("sub/a.sol", "/files_dir/sub/a.sol"),
+            ("sub/./deep/a.sol", "/files_dir/sub/deep/a.sol"),
+            ("..a.sol", "/files_dir/..a.sol"),
+        ] {
+            let path = types::InputFiles::source_file_path(&dir, Path::new(name))
+                .unwrap_or_else(|err| panic!("{name:?} should be accepted, got: {err}"));
+            assert_eq!(path, PathBuf::from(expected), "wrong path for {name:?}");
+            assert!(path.starts_with(&dir), "{name:?} escaped the files dir");
+        }
+    }
+
+    #[test]
+    fn source_file_path_rejects_escaping_names() {
+        let dir = PathBuf::from("/files_dir");
+        for name in [
+            "/etc/passwd",
+            "/files_dir/../etc/passwd",
+            "..",
+            "../a.sol",
+            "a/../../a.sol",
+            "sub/../../../../../etc/passwd",
+            "",
+            ".",
+            "./",
+            "././",
+        ] {
+            let result = types::InputFiles::source_file_path(&dir, Path::new(name));
+            assert!(
+                result.is_err(),
+                "{name:?} should be rejected, got: {:?}",
+                result.unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn correct_output() {
         let parent_dir = PathBuf::from("parent_dir");
         let file_names = vec![PathBuf::from("parent_dir/a.sol")];
@@ -565,12 +653,13 @@ mod tests {
 
     #[tokio::test]
     async fn compile() {
+        let executor = NativeCompilerExecutor::default();
         for ver in &["v0.4.8+commit.60cc1668", "v0.4.10+commit.f0d539ae"] {
             let version = DetailedVersion::from_str(ver).expect("valid version");
             let solc = get_solc(&version).await;
 
             let input: SolcInput = serde_json::from_str(DEFAULT_COMPILER_INPUT).unwrap();
-            let output: solc::CompilerOutput = compile_using_cli(&solc, &input)
+            let output: solc::CompilerOutput = compile_using_cli(&executor, &solc, &input)
                 .await
                 .unwrap_or_else(|_| panic!("failed to compile contracts with {ver}"));
             assert!(
@@ -592,7 +681,7 @@ mod tests {
                     sources: solc::Sources(sources),
                     settings: solc::Settings::default(),
                 });
-                let output: solc::CompilerOutput = compile_using_cli(&solc, &input)
+                let output: solc::CompilerOutput = compile_using_cli(&executor, &solc, &input)
                     .await
                     .expect("shouldn't return Err, but Ok with errors field");
                 assert!(output.has_error());
@@ -603,7 +692,7 @@ mod tests {
                 sources: solc::Sources(BTreeMap::new()),
                 settings: solc::Settings::default(),
             });
-            compile_using_cli(&solc, &input)
+            compile_using_cli(&executor, &solc, &input)
                 .await
                 .expect_err("should not compile empty files");
         }

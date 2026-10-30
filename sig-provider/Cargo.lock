@@ -4707,6 +4707,7 @@ dependencies = [
  "ethabi",
  "futures",
  "hex",
+ "httpmock",
  "itertools 0.10.5",
  "mockall",
  "pretty_assertions",

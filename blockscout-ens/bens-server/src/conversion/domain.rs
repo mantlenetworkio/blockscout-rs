@@ -46,6 +46,7 @@ pub fn lookup_domain_name_from_inner(
         only_active: inner.only_active,
         pagination,
         protocols: maybe_filter_protocols,
+        all_protocols: false,
     })
 }
 
@@ -68,6 +69,7 @@ pub fn lookup_address_from_inner(
         only_active: inner.only_active,
         pagination,
         protocols: maybe_filter_protocols,
+        all_protocols: false,
     })
 }
 
@@ -79,6 +81,7 @@ pub fn get_address_from_inner(
         network_id: Some(inner.chain_id),
         address,
         protocols: inner.protocol_id.map(|p| nonempty![p]),
+        all_protocols: false,
     })
 }
 
@@ -103,6 +106,7 @@ pub fn batch_resolve_from_inner(
         network_id: Some(inner.chain_id),
         addresses,
         protocols: None,
+        all_protocols: false,
     })
 }
 
@@ -154,6 +158,7 @@ pub fn detailed_domain_from_logic(
         .info
         .meta
         .render_protocol_dapp_url(domain.name.as_deref());
+    let protocol_dapp_logo = protocol.info.meta.protocol_dapp_logo.clone();
     let protocol = Some(protocol_from_logic(protocol, network));
     Ok(proto::DetailedDomain {
         id: domain.id,
@@ -171,6 +176,7 @@ pub fn detailed_domain_from_logic(
         resolved_with_wildcard: domain.resolved_with_wildcard,
         resolver_address,
         protocol_dapp_url,
+        protocol_dapp_logo,
     })
 }
 
@@ -194,6 +200,7 @@ pub fn domain_from_logic(
         .info
         .meta
         .render_protocol_dapp_url(domain.name.as_deref());
+    let protocol_dapp_logo = output.protocol.info.meta.protocol_dapp_logo.clone();
     let protocol = Some(protocol_from_logic(
         output.protocol,
         output.deployment_network,
@@ -208,6 +215,7 @@ pub fn domain_from_logic(
         registration_date: date_from_logic(domain.registration_date),
         protocol,
         protocol_dapp_url,
+        protocol_dapp_logo,
     })
 }
 

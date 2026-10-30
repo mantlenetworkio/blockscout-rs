@@ -30,8 +30,8 @@ Here, we describe variables specific to this service. Variables common to all se
 | Variable                                          | Required | Description                                                          | Default value                                      |
 |---------------------------------------------------|----------|----------------------------------------------------------------------|----------------------------------------------------|
 | `SIG_PROVIDER__SOURCES__FOURBYTE`                 |          | 4bytes directory HTTP URL                                            | `https://www.4byte.directory/`                     |
-| `SIG_PROVIDER__SOURCES__OPENCHAIN`                |          | Openchain Signature Database HTTP URL                                | `https://api.4byte.sourcify.dev/`                  |
-| `SIG_PROVIDER__SOURCES__SIGETH`                   |          | Deprecated legacy Openchain URL. Accepted for backwards-compatible config parsing but ignored. | `null`                                             |
+| `SIG_PROVIDER__SOURCES__SIGETH`                   |          | Sourcify 4byte (ex-Openchain) signature database HTTP URL            | `https://api.4byte.sourcify.dev/`                  |
+| `SIG_PROVIDER__SOURCES__OPENCHAIN`                |          | Alias of `SIG_PROVIDER__SOURCES__SIGETH`; set only one of them       |                                                    |
 | `SIG_PROVIDER__SOURCES__ETH_BYTECODE_DB__ENABLED` |          | If enabled, will use ethereum bytecode database as one of data sources | `true`                                             |
 | `SIG_PROVIDER__SOURCES__ETH_BYTECODE_DB__URL`     |          | Ethereum bytecode database HTTP URL                                  | `https://eth-bytecode-db.services.blockscout.com/` |
 
