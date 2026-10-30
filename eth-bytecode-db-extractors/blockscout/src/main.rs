@@ -14,14 +14,14 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let settings = Settings::build().context("failed to read config")?;
 
-    let mut connect_options = sea_orm::ConnectOptions::new(&settings.database_url);
-    connect_options.sqlx_logging_level(tracing::log::LevelFilter::Debug);
-    let db_connection = launcher::database::initialize_postgres::<Migrator>(
-        connect_options,
-        settings.create_database,
-        settings.run_migrations,
-    )
-    .await?;
+    let database_settings = launcher::database::DatabaseSettings {
+        connect: launcher::database::DatabaseConnectSettings::Url(settings.database_url.clone()),
+        create_database: settings.create_database,
+        run_migrations: settings.run_migrations,
+        connect_options: Default::default(),
+    };
+    let db_connection =
+        launcher::database::initialize_postgres::<Migrator>(&database_settings).await?;
 
     let client = Client::try_new(
         db_connection,

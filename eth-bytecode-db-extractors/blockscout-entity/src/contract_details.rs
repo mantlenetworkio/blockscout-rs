@@ -12,7 +12,7 @@ pub struct Model {
     #[sea_orm(
         primary_key,
         auto_increment = false,
-        column_type = "Binary(BlobSize::Blob(None))"
+        column_type = "VarBinary(StringLen::None)"
     )]
     pub contract_address: Vec<u8>,
     #[sea_orm(primary_key, auto_increment = false)]
@@ -27,15 +27,15 @@ pub struct Model {
     pub evm_version: Option<String>,
     #[sea_orm(column_type = "JsonBinary", nullable)]
     pub libraries: Option<Json>,
-    #[sea_orm(column_type = "Binary(BlobSize::Blob(None))", nullable)]
+    #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
     pub creation_code: Option<Vec<u8>>,
-    #[sea_orm(column_type = "Binary(BlobSize::Blob(None))")]
+    #[sea_orm(column_type = "VarBinary(StringLen::None)")]
     pub runtime_code: Vec<u8>,
-    #[sea_orm(column_type = "Binary(BlobSize::Blob(None))", nullable)]
+    #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
     pub transaction_hash: Option<Vec<u8>>,
     pub block_number: Decimal,
     pub transaction_index: Option<Decimal>,
-    #[sea_orm(column_type = "Binary(BlobSize::Blob(None))", nullable)]
+    #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
     pub deployer: Option<Vec<u8>>,
 }
 

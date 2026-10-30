@@ -31,7 +31,6 @@ pub async fn verify(
             evm_version: request.evm_version.clone(),
             optimization_runs: request.optimization_runs,
             source_files: request.source_files.clone(),
-            libraries: request.libraries.clone(),
             metadata: Some(metadata),
         }
     };
