@@ -10,7 +10,7 @@ pub struct Model {
     #[sea_orm(
         primary_key,
         auto_increment = false,
-        column_type = "Binary(BlobSize::Blob(None))"
+        column_type = "VarBinary(StringLen::None)"
     )]
     pub contract_address: Vec<u8>,
     pub contract_name: String,

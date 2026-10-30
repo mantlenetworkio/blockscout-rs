@@ -9,18 +9,16 @@ sig-provider = { path = "../sig-provider" }
 sig-provider-proto = { path = "../sig-provider-proto" }
 async-trait = "0.1"
 actix-web = "4"
-actix-web-prom = "0.6"
-prometheus = "0.13"
-tonic = "0.8"
+actix-web-prom = "0.10"
+prometheus = "0.14"
+tonic = "0.14"
+tonic-prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_with = { version = "3.21", features = ["hex", "base64"] }
 bytes = "1.2"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 config = "0.13"
-opentelemetry = { version = "0.18", features = ["rt-tokio"] }
-opentelemetry-jaeger = { version = "0.17", features = ["rt-tokio"] }
 tracing = "0.1"
-tracing-opentelemetry = "0.18"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
 anyhow = "1.0"

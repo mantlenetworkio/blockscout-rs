@@ -27,7 +27,7 @@ amplify = { version = "4.6.0" }
 anyhow = { version = "1.0" }
 async-trait = { version = "0.1" }
 blockscout-display-bytes = "1.1.0"
-blockscout-service-launcher = "0.21.0"
+blockscout-service-launcher = { path = "../libs/blockscout-service-launcher", version = "0.23.0" }
 bytes = { version = "1.2" }
 bollard = { version = "0.21.1", default-features = false, features = ["ssh"] }
 openssh = "0.11.6"
@@ -79,4 +79,4 @@ tonic-prost-build = "0.14"
 tracing = { version = "0.1" }
 url = { version = "2.4" }
 uuid = { version = "1", features = ["v4"] }
-wiremock = { version = "0.5" }
+wiremock = { version = "0.6" }

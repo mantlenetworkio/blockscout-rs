@@ -32,7 +32,7 @@ pub async fn from_statements(
     for statement in statements {
         txn.execute(Statement::from_string(
             manager.get_database_backend(),
-            statement.to_string(),
+            ToString::to_string(&statement),
         ))
         .await
         .map_err(|err| DbErr::Migration(format!("{err}\nQuery: {statement}")))?;

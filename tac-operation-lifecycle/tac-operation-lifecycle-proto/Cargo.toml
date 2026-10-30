@@ -5,15 +5,17 @@ edition = "2021"
 license = "LicenseRef-Blockscout"
 
 [dependencies]
-actix-prost = { git = "https://github.com/blockscout/actix-prost" }
-actix-prost-macros = { git = "https://github.com/blockscout/actix-prost" }
+actix-prost = { version = "0.4.0" }
+actix-prost-macros = { version = "0.4.0" }
 actix-web = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 
 [build-dependencies]
-actix-prost-build = { git = "https://github.com/blockscout/actix-prost" }
+actix-prost-build = { version = "0.4.0" }
 prost-build = { workspace = true }
 tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }

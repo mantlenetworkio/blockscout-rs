@@ -25,7 +25,8 @@ regex = "1.7"
 serde = { version = "1", features = ["derive"] }
 serde_with = { version = "3.21", features = ["hex", "base64"] }
 tokio = "1.21"
-tonic = "0.8"
+tonic = "0.14"
+tonic-prost = "0.14"
 tracing = "0.1"
 
 [dev-dependencies]
@@ -38,6 +39,7 @@ url = "2.5.0"
 walkdir = "2.3"
 
 [build-dependencies]
-actix-prost-build = { git = "https://github.com/blockscout/actix-prost" }
-tonic-build = "0.8"
-prost-build = "0.11"
+actix-prost-build = { version = "0.4.0" }
+tonic-build = "0.14"
+tonic-prost-build = "0.14"
+prost-build = "0.14"

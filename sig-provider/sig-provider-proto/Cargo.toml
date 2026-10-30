@@ -5,16 +5,18 @@ edition = "2021"
 license = "LicenseRef-Blockscout"
 
 [dependencies]
-actix-prost = { git = "https://github.com/blockscout/actix-prost" }
-actix-prost-macros = { git = "https://github.com/blockscout/actix-prost" }
+actix-prost = { version = "0.4.0" }
+actix-prost-macros = { version = "0.4.0" }
 actix-web = "4"
-prost = "0.11"
-tonic = "0.8"
+prost = "0.14"
+tonic = "0.14"
+tonic-prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_with = { version = "3.21", features = ["hex", "base64"] }
 async-trait = "0.1"
 
 [build-dependencies]
-actix-prost-build = { git = "https://github.com/blockscout/actix-prost" }
-tonic-build = "0.8"
-prost-build = "0.11"
+actix-prost-build = { version = "0.4.0" }
+tonic-build = "0.14"
+tonic-prost-build = "0.14"
+prost-build = "0.14"

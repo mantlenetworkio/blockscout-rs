@@ -1,0 +1,21 @@
+[package]
+name = "zetachain-cctx-proto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+actix-web = "4"
+actix-prost = "0.4.0"
+actix-prost-macros = "0.4.0"
+prost = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_with = "3"
+tonic = "0.14"
+tonic-prost = "0.14"
+
+[build-dependencies]
+actix-prost-build = "0.4.0"
+prost-build = "0.14"
+tonic-build = "0.14"
+tonic-prost-build = "0.14"
