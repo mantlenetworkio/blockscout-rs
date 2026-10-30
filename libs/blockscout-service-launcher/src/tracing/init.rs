@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
 use super::{JaegerSettings, TracingFormat, TracingSettings};
-use opentelemetry::{
-    global::{self},
-    sdk::{self, propagation::TraceContextPropagator},
-    trace::TraceError,
+use opentelemetry::{global, trace::TracerProvider};
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::{
+    propagation::TraceContextPropagator, trace::SdkTracer, trace::SdkTracerProvider, Resource,
 };
 use std::marker::Send;
 use tracing::Metadata;
@@ -90,12 +90,22 @@ pub fn init_logs_with_filter<F: Fn(&Metadata) -> bool + Send + Sync + 'static>(
 pub fn init_jaeger_tracer(
     service_name: &str,
     endpoint: &str,
-) -> Result<sdk::trace::Tracer, TraceError> {
+) -> anyhow::Result<SdkTracer> {
     global::set_text_map_propagator(TraceContextPropagator::new());
 
-    opentelemetry_jaeger::new_agent_pipeline()
-        .with_service_name(service_name)
+    // The endpoint is expected to be an OTLP gRPC endpoint (e.g. `http://127.0.0.1:4317`).
+    // Jaeger (>= 1.35) and the OpenTelemetry Collector both accept OTLP natively.
+    let exporter = SpanExporter::builder()
+        .with_tonic()
         .with_endpoint(endpoint)
-        .with_auto_split_batch(true)
-        .install_batch(opentelemetry::runtime::Tokio)
+        .build()?;
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name(service_name.to_string())
+                .build(),
+        )
+        .build();
+    Ok(provider.tracer(service_name.to_string()))
 }
