@@ -19,7 +19,7 @@ route = "/metrics"
 
 [jaeger]
 enabled = false
-agent_endpoint = "localhost:6831"
+agent_endpoint = "http://127.0.0.1:4317"
 
 [tracing]
 enabled = true

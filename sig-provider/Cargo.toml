@@ -3,4 +3,4 @@ resolver = "2"
 members = ["sig-provider", "sig-provider-proto", "sig-provider-server"]
 
 [workspace.dependencies]
-blockscout-service-launcher = "0.10.0"
+blockscout-service-launcher = { path = "../libs/blockscout-service-launcher", version = "0.23.0" }

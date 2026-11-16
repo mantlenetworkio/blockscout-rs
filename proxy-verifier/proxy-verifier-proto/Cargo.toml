@@ -6,14 +6,16 @@ license = "LicenseRef-Blockscout"
 
 [dependencies]
 actix-web = "4"
-actix-prost = { version = "0.1.0" }
-actix-prost-macros = { version = "0.1.0" }
-prost = "0.13"
+actix-prost = { version = "0.4.0" }
+actix-prost-macros = { version = "0.4.0" }
+prost = "0.14"
 serde = { version = "1" }
 serde_with = { version = "3.21" }
-tonic = "0.12"
+tonic = "0.14"
+tonic-prost = "0.14"
 
 [build-dependencies]
-actix-prost-build = { version = "0.1.0" }
-prost-build = "0.13"
-tonic-build = "0.12"
+actix-prost-build = { version = "0.4.0" }
+prost-build = "0.14"
+tonic-build = "0.14"
+tonic-prost-build = "0.14"

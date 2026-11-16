@@ -57,8 +57,14 @@ impl EthBytecodeDbRequest {
     pub fn new(contract: VerifiableContract, creation_input: Bytes) -> anyhow::Result<Self> {
         let verification_metadata =
             |contract_address: Vec<u8>| eth_bytecode_db::VerificationMetadata {
-                chain_id: "1".to_string(),
-                contract_address: Bytes::from(contract_address).to_string(),
+                chain_id: Some("1".to_string()),
+                contract_address: Some(Bytes::from(contract_address).to_string()),
+                transaction_hash: None,
+                block_number: None,
+                transaction_index: None,
+                deployer: None,
+                creation_code: None,
+                runtime_code: None,
             };
 
         let request = match contract {
@@ -70,7 +76,6 @@ impl EthBytecodeDbRequest {
                     evm_version: None,
                     optimization_runs: model.optimizations.then_some(model.optimization_runs as i32),
                     source_files: BTreeMap::from([("main.sol".to_string(), model.source_code)]),
-                    libraries: Default::default(),
                     metadata: Some(verification_metadata(model.contract_address)),
                 })
             }
@@ -83,7 +88,6 @@ impl EthBytecodeDbRequest {
                     optimization_runs: model.optimizations.then_some(model.optimization_runs as i32),
                     source_files: serde_json::from_value(model.sources)
                         .context("solidity multiple model (conversion to request) source files deserialization failed")?,
-                    libraries: Default::default(),
                     metadata: Some(verification_metadata(model.contract_address)),
                 })
             }

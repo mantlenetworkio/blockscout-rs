@@ -11,13 +11,13 @@ actix-prost = { version = "0.3.1"}
 actix-prost-build = { version = "0.3.1" }
 actix-prost-macros = { version = "0.3.1" }
 actix-web = { version = "4" }
-alloy = { version = "0.5.4", default-features = false }
-alloy-ccip-read = { version = "0.3.0" }
+alloy = { version = "1", default-features = false }
+alloy-ccip-read = { version = "0.3.1" }
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
 bigdecimal = { version = "0.4" }
 blockscout-display-bytes = { version = "1.0" }
-blockscout-service-launcher = { version = "0.22.0" }
+blockscout-service-launcher = { path = "../libs/blockscout-service-launcher", version = "0.23.0" }
 cached = { version = "0.54.0", default-features = false }
 chrono = "0.4"
 config = { version = "0.14" }

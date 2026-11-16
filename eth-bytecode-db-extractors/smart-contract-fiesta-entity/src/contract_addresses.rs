@@ -11,13 +11,13 @@ pub struct Model {
     #[sea_orm(
         primary_key,
         auto_increment = false,
-        column_type = "Binary(BlobSize::Blob(None))"
+        column_type = "VarBinary(StringLen::None)"
     )]
     pub contract_address: Vec<u8>,
     pub verification_method: VerificationMethod,
     pub status: Status,
     pub log: Option<String>,
-    #[sea_orm(column_type = "Binary(BlobSize::Blob(None))", nullable)]
+    #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
     pub creation_input: Option<Vec<u8>>,
 }
 

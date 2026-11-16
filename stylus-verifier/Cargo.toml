@@ -19,7 +19,7 @@ actix-web = { version = "4" }
 anyhow = { version = "1.0.87" }
 async-trait = { version = "0.1.82" }
 blockscout-display-bytes = { version = "1.1.0" }
-blockscout-service-launcher = { version = "0.21.0" }
+blockscout-service-launcher = { path = "../libs/blockscout-service-launcher", version = "0.23.0" }
 compiler-runner = { git = "https://github.com/blockscout/blockscout-rs", rev = "53fcbd1" }
 bytes = { version = "1.7.1" }
 futures-util = { version = "0.3.30" }
