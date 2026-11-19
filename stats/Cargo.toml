@@ -42,5 +42,8 @@ syn = "2.0"
 trait-variant = "0.1.2"
 wiremock = "0.6.2"
 # todo: set to tag once released / update as needed
-zetachain-cctx-entity = { path = "zetachain-cctx/zetachain-cctx-entity" }
-zetachain-cctx-migration = { path = "zetachain-cctx/zetachain-cctx-migration" }
+# `package` makes these explicit renames, so code refers to the crates by these
+# names. zetachain-cctx-migration's lib target is called `migration`, which
+# would otherwise clash with stats' own `migration` crate.
+zetachain-cctx-entity = { path = "zetachain-cctx/zetachain-cctx-entity", package = "zetachain-cctx-entity" }
+zetachain-cctx-migration = { path = "zetachain-cctx/zetachain-cctx-migration", package = "zetachain-cctx-migration" }
