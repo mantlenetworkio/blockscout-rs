@@ -191,7 +191,7 @@ impl ReadWriteRepo {
     /// The read-only database connection, will fallback to the main database if the replica is unhealthy.
     pub fn read_db(&self) -> &DatabaseConnection {
         match &self.replica_db {
-            Some(replica_db) if replica_db.is_healthy() => &replica_db.db,
+            Some(replica_db) if replica_db.is_healthy() => replica_db.db.as_ref(),
             _ => &self.main_db,
         }
     }
@@ -199,7 +199,9 @@ impl ReadWriteRepo {
 
 #[derive(Clone)]
 pub struct ReplicaRepo {
-    db: DatabaseConnection,
+    // `Arc` because `DatabaseConnection` is not `Clone` when sea-orm's `mock`
+    // feature is enabled, as it is in stats tests. Clones still share one pool.
+    db: Arc<DatabaseConnection>,
     is_healthy: Arc<AtomicBool>,
     max_lag: Duration,
     health_check_interval: Duration,
@@ -208,7 +210,7 @@ pub struct ReplicaRepo {
 impl ReplicaRepo {
     pub fn new(db: DatabaseConnection, max_lag: Duration, health_check_interval: Duration) -> Self {
         Self {
-            db,
+            db: Arc::new(db),
             is_healthy: Arc::new(AtomicBool::new(true)),
             max_lag,
             health_check_interval,
@@ -256,7 +258,7 @@ impl ReplicaRepo {
             self.db.get_database_backend(),
             query,
         ))
-        .one(&self.db)
+        .one(self.db.as_ref())
         .await;
 
         // replica is considered unhealthy when :

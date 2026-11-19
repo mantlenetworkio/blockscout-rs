@@ -106,8 +106,11 @@ jobs:
     needs:
       - test
       - lint
+    # Builds on upstream Blockscout's ARM runners, whose secrets only exist in
+    # blockscout/blockscout-rs; in a fork the job can only fail, so skip it there.
     if: |
       always() &&
+      github.repository == 'blockscout/blockscout-rs' &&
       (needs.test.result == 'success' || needs.test.result == 'cancelled') &&
       (needs.lint.result == 'success' || needs.lint.result == 'cancelled')
     uses: ./.github/workflows/_docker-build-push.yml

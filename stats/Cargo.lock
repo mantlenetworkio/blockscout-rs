@@ -822,6 +822,7 @@ source = "git+https://github.com/blockscout/blockscout-rs?rev=cab0e70#cab0e70630
 [[package]]
 name = "blockscout-service-launcher"
 version = "0.23.0"
+source = "git+https://github.com/mantlenetworkio/blockscout-rs?rev=fe72622679a358553848c65701935e141609a8d3#fe72622679a358553848c65701935e141609a8d3"
 dependencies = [
  "actix-cors",
  "actix-web",

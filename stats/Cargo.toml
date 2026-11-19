@@ -11,7 +11,11 @@ members = [
 
 [workspace.dependencies]
 blockscout-client = { git = "https://github.com/blockscout/blockscout-rs/", rev = "d02877c" }
-blockscout-service-launcher = { path = "../libs/blockscout-service-launcher", version = "0.23.0" }
+# A git rev, not `path = "../libs/blockscout-service-launcher"`: the image is
+# built with `stats/` as the docker build context, so nothing outside `stats/`
+# is available. Point the rev at a commit with the wanted launcher code when
+# libs/blockscout-service-launcher changes.
+blockscout-service-launcher = { git = "https://github.com/mantlenetworkio/blockscout-rs", rev = "fe72622679a358553848c65701935e141609a8d3", version = "0.23.0" }
 hex = "0.4.3"
 # interchain-indexer: `entity` for the columns, `filters` for the read predicate
 # shared verbatim with the indexer's read API, `migration` for the test schema.
@@ -42,5 +46,8 @@ syn = "2.0"
 trait-variant = "0.1.2"
 wiremock = "0.6.2"
 # todo: set to tag once released / update as needed
-zetachain-cctx-entity = { path = "zetachain-cctx/zetachain-cctx-entity" }
-zetachain-cctx-migration = { path = "zetachain-cctx/zetachain-cctx-migration" }
+# `package` makes these explicit renames, so code refers to the crates by these
+# names. zetachain-cctx-migration's lib target is called `migration`, which
+# would otherwise clash with stats' own `migration` crate.
+zetachain-cctx-entity = { path = "zetachain-cctx/zetachain-cctx-entity", package = "zetachain-cctx-entity" }
+zetachain-cctx-migration = { path = "zetachain-cctx/zetachain-cctx-migration", package = "zetachain-cctx-migration" }

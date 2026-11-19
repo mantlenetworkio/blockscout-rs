@@ -490,6 +490,7 @@ pub async fn recorded_min_chart_date(
 /// reads of one row invited the two to disagree — which is exactly what the
 /// helper was extracted to prevent. Ignored entirely when `force_full`.
 #[instrument(level="info", skip_all, fields(min_indexer_block = observed_min_indexer_block, chart =? ChartProps::key()))]
+#[allow(clippy::extra_unused_type_parameters)]
 pub async fn last_accurate_point<ChartProps, Query>(
     observed_min_indexer_block: i64,
     recorded: Option<Option<i64>>,

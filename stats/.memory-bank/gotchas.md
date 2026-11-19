@@ -767,3 +767,36 @@ retroactive mutation above: a message becomes "destination-side observed" only w
 
 `sent + received` also does not equal the undirected total, for the same reason — each
 side drops the rows it cannot observe.
+
+---
+
+## A Blockscout API Outage Restarts the Whole Service
+
+**Symptom:** the stats process exits and is restarted whenever the Blockscout API
+fails for about a minute (a backend deploy or restart is enough). Chart updates that
+were in progress are aborted.
+
+**Root cause:** `IndexingStatusAggregator::check_blockscout_status`
+(`stats-server/src/blockscout_waiter.rs`) tolerates `RETRIES` (10) consecutive failed
+indexing-status requests; the 11th makes `run` return an error. That error does not
+just stop the waiter: `stats()` in `stats-server/src/server.rs` returns as soon as any
+tracked task finishes, so the process exits and the remaining tasks are aborted. With
+the default 5 s `check_period_secs`, eleven fast failures take about 50 s. The counter
+resets only on a successful response.
+
+The exposure does not end once the charts are computed. `run` polls every
+`check_period_secs` until every axis reaches its maximum, and an axis that never does
+keeps the 5 s poll for the life of the process. The user-ops axis on a chain without
+the user-ops indexer is one: the API answers 501, which is logged and leaves the axis at
+its seed. Failed user-ops requests do not count towards `RETRIES`, but the blockscout
+request in the same loop still does.
+
+A request that gets no answer at all fails after `BLOCKSCOUT_API_TIMEOUT` and counts as
+one failure, so a hung API also ends in a restart, after six to eleven minutes
+(depending on whether the user-ops request hangs too). Before the client had a
+timeout, such a request kept the waiter inside it forever: no error, no log line, no
+restart, and every chart gated on a start condition never got its first update.
+
+**What to do:** nothing, if a restart during a backend outage is acceptable; the
+service recovers once the API answers again. Avoiding the restart means changing how
+`run`'s error is handled in `server.rs`, not tuning a setting.

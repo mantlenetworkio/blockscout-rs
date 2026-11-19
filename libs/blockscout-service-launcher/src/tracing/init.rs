@@ -4,7 +4,9 @@ use super::{JaegerSettings, TracingFormat, TracingSettings};
 use opentelemetry::{global, trace::TracerProvider};
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{
-    propagation::TraceContextPropagator, trace::SdkTracer, trace::SdkTracerProvider, Resource,
+    propagation::TraceContextPropagator,
+    trace::{SdkTracer, SdkTracerProvider},
+    Resource,
 };
 use std::marker::Send;
 use tracing::Metadata;
@@ -87,10 +89,7 @@ pub fn init_logs_with_filter<F: Fn(&Metadata) -> bool + Send + Sync + 'static>(
     Ok(())
 }
 
-pub fn init_jaeger_tracer(
-    service_name: &str,
-    endpoint: &str,
-) -> anyhow::Result<SdkTracer> {
+pub fn init_jaeger_tracer(service_name: &str, endpoint: &str) -> anyhow::Result<SdkTracer> {
     global::set_text_map_propagator(TraceContextPropagator::new());
 
     // The endpoint is expected to be an OTLP gRPC endpoint (e.g. `http://127.0.0.1:4317`).
