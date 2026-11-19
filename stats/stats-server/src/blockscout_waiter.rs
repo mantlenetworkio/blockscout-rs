@@ -24,6 +24,20 @@ use stats::{
 use tokio::{sync::watch, time::sleep};
 
 const RETRIES: u64 = 10;
+/// Upper bound on a whole Blockscout API request, from connecting until the
+/// response body has been read.
+///
+/// `reqwest`'s default client has no timeout. A request that never gets an
+/// answer (a stalled connection, a hung backend) would keep the waiter inside
+/// it forever, with no error, no retry, no log line and no restart. With the
+/// bound it fails like any other request and the next cycle retries.
+///
+/// Generous on purpose: a failed indexing-status request counts towards
+/// [`RETRIES`], and running out of retries stops the service, so a tight bound
+/// would turn a slow API into restarts.
+const BLOCKSCOUT_API_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upper bound on the connect phase (DNS, TCP, TLS) of a Blockscout API request.
+const BLOCKSCOUT_API_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Checks blockscout indexing status and translates it to
 /// a `tokio`'s `watch` channel in a convenient form.
@@ -592,9 +606,12 @@ pub fn init_blockscout_api_client(
         settings.ignore_blockscout_api_absence,
         &settings.blockscout_api_url,
     ) {
-        (_, Some(blockscout_api_url)) => Ok(Some(blockscout_client::Configuration::new(
+        (_, Some(blockscout_api_url)) => blockscout_api_config(
             blockscout_api_url.clone(),
-        ))),
+            BLOCKSCOUT_API_TIMEOUT,
+            BLOCKSCOUT_API_CONNECT_TIMEOUT,
+        )
+        .map(Some),
         (true, None) => {
             tracing::info!(
                 "Blockscout API URL has not been provided and `IGNORE_BLOCKSCOUT_API_ABSENCE` setting is \
@@ -609,6 +626,21 @@ pub fn init_blockscout_api_client(
             Settings::SERVICE_NAME
         ),
     }
+}
+
+/// [`init_blockscout_api_client`]'s configuration, with the timeouts as
+/// parameters so tests can use short ones.
+fn blockscout_api_config(
+    base_url: url::Url,
+    timeout: Duration,
+    connect_timeout: Duration,
+) -> anyhow::Result<blockscout_client::Configuration> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(connect_timeout)
+        .build()
+        .context("Blockscout API client")?;
+    Ok(blockscout_client::Configuration::new(base_url).with_client(client.into()))
 }
 
 #[cfg(test)]
@@ -1002,6 +1034,59 @@ mod tests {
         .await
         .expect("must not timeout")
         .expect("must not error");
+    }
+
+    /// The production client must give up on a request the API never answers,
+    /// so the next cycle can get through. Without a client timeout the waiter
+    /// stays inside that request forever: nothing is logged, nothing is
+    /// retried, and no status update is ever published.
+    #[rstest]
+    #[tokio::test]
+    async fn waiter_recovers_from_unanswered_request(
+        #[with(0.9, 0.9, false, false)] wait_config: StartConditionSettings,
+    ) {
+        let server = MockServer::start().await;
+        // Priority 1 is tried before the default 5, and `up_to_n_times(1)`
+        // retires the mock after one match, so only the first request hangs.
+        // `expect(1)` makes the test fail if that request never reached it.
+        Mock::given(method("GET"))
+            .and(path("/api/v2/main-page/indexing-status"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::MAX))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/main-page/indexing-status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "finished_indexing": true,
+                "finished_indexing_blocks": true,
+                "indexed_blocks_ratio": "1.00",
+                "indexed_internal_transactions_ratio": "1.00"
+            })))
+            .mount(&server)
+            .await;
+        let request_timeout = Duration::from_millis(500);
+        let api_config = blockscout_api_config(
+            Url::from_str(&server.uri()).unwrap(),
+            request_timeout,
+            request_timeout,
+        )
+        .unwrap();
+        let (aggregator, mut listener) = init(Some(api_config), wait_config, None, None);
+        let expected_status = IndexingStatus::LEAST_RESTRICTIVE
+            .with_blockscout(BlockscoutIndexingStatus::InternalTransactionsIndexed);
+
+        select! {
+            res = aggregator.run() => panic!("aggregator stopped: {res:?}"),
+            res = tokio::time::timeout(
+                Duration::from_secs(10),
+                listener.wait_until_status_at_least(expected_status),
+            ) => res
+                .expect("an unanswered request must not stall the waiter")
+                .expect("status channel must stay open"),
+        }
     }
 
     #[rstest]
