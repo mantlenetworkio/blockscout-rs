@@ -23,7 +23,8 @@ fn compile(
             ".blockscout.sig_provider.v1.HealthCheckRequest.service",
             "#[serde(default)]"
         )
-        .message_attribute(".", "#[derive(Eq, Hash)]");
+        .message_attribute(".blockscout.sig_provider.v1.Argument", "#[derive(Eq, Hash)]")
+        .message_attribute(".blockscout.sig_provider.v1.Abi", "#[derive(Eq, Hash)]");
     config.compile_protos(protos, includes)?;
     Ok(())
 }
@@ -35,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all("./swagger").unwrap();
     let gens = Box::new(GeneratorList::new(vec![
-        tonic_build::configure().service_generator(),
+        tonic_prost_build::configure().service_generator(),
         Box::new(ActixGenerator::new("proto/api_config_http.yaml").unwrap()),
     ]));
     compile(

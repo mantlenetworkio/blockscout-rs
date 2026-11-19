@@ -1,0 +1,10 @@
+[package]
+name = "zetachain-cctx-entity"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+sea-orm = { version = "1.1", features = [ "sqlx-postgres", "runtime-tokio-rustls", "macros" ] }
+serde = { version = "1", features = ["derive"] }
+zetachain-cctx-proto = { path = "../zetachain-cctx-proto" }

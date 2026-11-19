@@ -34,7 +34,7 @@ amplify = { version = "4.7.0" }
 anyhow = { version = "1" }
 async-trait = { version = "0.1" }
 blockscout-display-bytes = { version = "1.1.0" }
-blockscout-service-launcher = { version = "0.21.0", default-features = false, features = ["database-1"] }
+blockscout-service-launcher = { path = "../libs/blockscout-service-launcher", version = "0.23.0", default-features = false, features = ["database-1"] }
 bytes = { version = "1.2" }
 foundry-compilers = { version = "0.11.6" }
 futures = { version = "0.3" }

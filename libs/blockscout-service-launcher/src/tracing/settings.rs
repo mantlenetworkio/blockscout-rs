@@ -31,6 +31,8 @@ impl Default for TracingSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct JaegerSettings {
     pub enabled: bool,
+    /// OTLP gRPC endpoint of the trace collector (Jaeger >= 1.35 / OTel Collector),
+    /// e.g. `http://127.0.0.1:4317`.
     pub agent_endpoint: String,
 }
 
@@ -38,7 +40,7 @@ impl Default for JaegerSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            agent_endpoint: "127.0.0.1:6831".to_string(),
+            agent_endpoint: "http://127.0.0.1:4317".to_string(),
         }
     }
 }

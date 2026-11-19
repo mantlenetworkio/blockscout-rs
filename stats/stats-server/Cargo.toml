@@ -33,7 +33,7 @@ stats-proto = { path = "../stats-proto" }
 thiserror = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-util = "0.7.13"
-tonic = "0.12"
+tonic = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = { version = "2.5", features = ["serde"] }

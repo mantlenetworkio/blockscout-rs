@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: LicenseRef-Blockscout
 
 use crate::settings::JaegerSettings;
-use opentelemetry::{sdk::trace::Tracer, trace::TraceError};
+use opentelemetry::{global, trace::TracerProvider};
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::{
+    propagation::TraceContextPropagator, trace::SdkTracer, trace::SdkTracerProvider, Resource,
+};
 use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, prelude::*};
 
 pub fn init_logs(jaeger_settings: JaegerSettings) {
@@ -17,7 +21,7 @@ pub fn init_logs(jaeger_settings: JaegerSettings) {
         let tracer =
             init_jaeger_tracer(&jaeger_settings.agent_endpoint).expect("failed to init tracer");
         registry
-            // output traces to jaeger with default log level (default is DEBUG)
+            // output traces to the collector with default log level (default is DEBUG)
             .with(
                 tracing_opentelemetry::layer()
                     .with_tracer(tracer)
@@ -30,10 +34,22 @@ pub fn init_logs(jaeger_settings: JaegerSettings) {
     .expect("failed to register tracer with registry");
 }
 
-fn init_jaeger_tracer(agent_endpoint: &str) -> Result<Tracer, TraceError> {
-    opentelemetry_jaeger::new_pipeline()
-        .with_agent_endpoint(agent_endpoint)
-        .with_service_name("multichain-search")
-        .with_auto_split_batch(true)
-        .install_batch(opentelemetry::runtime::Tokio)
+fn init_jaeger_tracer(agent_endpoint: &str) -> anyhow::Result<SdkTracer> {
+    global::set_text_map_propagator(TraceContextPropagator::new());
+
+    // The endpoint is expected to be an OTLP gRPC endpoint (e.g. `http://127.0.0.1:4317`).
+    // Jaeger (>= 1.35) and the OpenTelemetry Collector both accept OTLP natively.
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(agent_endpoint)
+        .build()?;
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name("multichain-search".to_string())
+                .build(),
+        )
+        .build();
+    Ok(provider.tracer("multichain-search"))
 }

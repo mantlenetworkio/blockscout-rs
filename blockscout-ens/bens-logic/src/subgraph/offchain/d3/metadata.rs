@@ -54,8 +54,7 @@ pub async fn get_metadata(
     let uri = reader
         .call_ccip_solidity_method(d3.native_token_contract, call)
         .await?
-        .into_value()
-        ._0;
+        .into_value();
     let metadata = reqwest::get(uri).await?.json::<D3NameMetadata>().await?;
     Ok(metadata)
 }

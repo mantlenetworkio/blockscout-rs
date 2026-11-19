@@ -5,19 +5,21 @@ edition = "2024"
 license = "LicenseRef-Blockscout"
 
 [dependencies]
-actix-prost = "0.1.0"
-actix-prost-macros = "0.1.0"
+actix-prost = "0.4.0"
+actix-prost-macros = "0.4.0"
 actix-web = "4"
 async-trait = "0.1"
-prost = "0.13"
+prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_with = { version = "3", features = ["hex", "base64"] }
-tonic = "0.12"
+tonic = "0.14"
+tonic-prost = "0.14"
 
 [build-dependencies]
-actix-prost-build = "0.1.0"
-prost-build = "0.13"
-tonic-build = "0.12"
+actix-prost-build = "0.4.0"
+prost-build = "0.14"
+tonic-build = "0.14"
+tonic-prost-build = "0.14"
 
 [dev-dependencies]
 serde_json = { workspace = true }

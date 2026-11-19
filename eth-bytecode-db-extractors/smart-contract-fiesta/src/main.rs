@@ -17,16 +17,14 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let settings = Settings::build().context("failed to read config")?;
 
-    let mut connect_options = sea_orm::ConnectOptions::new(&settings.database_url);
-    connect_options.sqlx_logging_level(tracing::log::LevelFilter::Debug);
-    let db_connection = Arc::new(
-        database::initialize_postgres::<Migrator>(
-            connect_options,
-            settings.create_database,
-            settings.run_migrations,
-        )
-        .await?,
-    );
+    let database_settings = database::DatabaseSettings {
+        connect: database::DatabaseConnectSettings::Url(settings.database_url.clone()),
+        create_database: settings.create_database,
+        run_migrations: settings.run_migrations,
+        connect_options: Default::default(),
+    };
+    let db_connection =
+        Arc::new(database::initialize_postgres::<Migrator>(&database_settings).await?);
 
     if settings.import_dataset {
         dataset::import_dataset(

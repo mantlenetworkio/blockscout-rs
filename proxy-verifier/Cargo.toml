@@ -8,5 +8,5 @@ members = [
 
 [workspace.dependencies]
 api-client-framework = { version = "0.1.0" }
-blockscout-service-launcher = "0.18.0"
-eth-bytecode-db-proto = { git = "https://github.com/blockscout/blockscout-rs/", rev = "be8422c" }
+blockscout-service-launcher = { path = "../libs/blockscout-service-launcher", version = "0.23.0" }
+eth-bytecode-db-proto = { path = "../eth-bytecode-db/eth-bytecode-db-proto" }
