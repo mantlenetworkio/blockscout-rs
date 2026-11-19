@@ -228,12 +228,12 @@ How large that movement is for a particular deployment is characterised by the t
 
 [anchor]: <> (anchors.envs.start.tracing)
 
-| Variable                        | Req&#x200B;uir&#x200B;ed | Description                                       | Default value    |
-| ------------------------------- | ------------------------ | ------------------------------------------------- | ---------------- |
-| `STATS__JAEGER__AGENT_ENDPOINT` |                          | Jaeger agent endpoint for tracing                 | `127.0.0.1:6831` |
-| `STATS__JAEGER__ENABLED`        |                          | Enable Jaeger tracing                             | `false`          |
-| `STATS__TRACING__ENABLED`       |                          | Enable tracing                                    | `true`           |
-| `STATS__TRACING__FORMAT`        |                          | Tracing format to use, either 'default' or 'json' | `default`        |
+| Variable                        | Req&#x200B;uir&#x200B;ed | Description                                       | Default value           |
+| ------------------------------- | ------------------------ | ------------------------------------------------- | ----------------------- |
+| `STATS__JAEGER__AGENT_ENDPOINT` |                          | Jaeger agent endpoint for tracing                 | `http://127.0.0.1:4317` |
+| `STATS__JAEGER__ENABLED`        |                          | Enable Jaeger tracing                             | `false`                 |
+| `STATS__TRACING__ENABLED`       |                          | Enable tracing                                    | `true`                  |
+| `STATS__TRACING__FORMAT`        |                          | Tracing format to use, either 'default' or 'json' | `default`               |
 
 [anchor]: <> (anchors.envs.end.tracing)
 

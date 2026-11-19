@@ -164,6 +164,7 @@ impl From<CoinType> for i32 {
 use crate::token::Model as Token;
 use zetachain_cctx_proto::blockscout::zetachain_cctx::v1::Token as TokenProto;
 
+#[allow(clippy::from_over_into)]
 impl Into<TokenProto> for Token {
     fn into(self) -> TokenProto {
         TokenProto {

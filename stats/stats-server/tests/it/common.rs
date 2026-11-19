@@ -74,6 +74,7 @@ pub enum ChartSubset {
     AllCharts,
 }
 
+#[allow(clippy::needless_bool)]
 pub async fn wait_for_subset_to_update(base: &Url, subset: ChartSubset) {
     wait_until(Duration::from_secs(300), || async {
         let statuses: proto_v1::UpdateStatus =
