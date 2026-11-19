@@ -638,6 +638,13 @@ fn blockscout_api_config(
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .connect_timeout(connect_timeout)
+        // No connection reuse. Blockscout's web server (Cowboy) closes a
+        // keep-alive connection after 5 s without a new request, its default
+        // `request_timeout`, and 5 s is also the default poll period. A pooled
+        // connection then regularly dies just as the next poll writes to it,
+        // and that request fails with `IncompleteMessage`, which counts towards
+        // `RETRIES`. At a few requests per poll, a fresh connection is free.
+        .pool_max_idle_per_host(0)
         .build()
         .context("Blockscout API client")?;
     Ok(blockscout_client::Configuration::new(base_url).with_client(client.into()))
@@ -1087,6 +1094,69 @@ mod tests {
                 .expect("an unanswered request must not stall the waiter")
                 .expect("status channel must stay open"),
         }
+    }
+
+    /// Each poll must open its own connection instead of reusing one that sat
+    /// idle in the pool; see `pool_max_idle_per_host` in
+    /// [`blockscout_api_config`].
+    #[tokio::test]
+    async fn blockscout_api_client_does_not_reuse_connections() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        // HTTP/1.1 server that keeps every connection open and counts them.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let accepted = connections.clone();
+        tokio::spawn(async move {
+            let body = serde_json::json!({
+                "finished_indexing": true,
+                "finished_indexing_blocks": true,
+                "indexed_blocks_ratio": "1.00",
+                "indexed_internal_transactions_ratio": "1.00"
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let response = response.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buf = [0; 1024];
+                    while let Ok(n @ 1..) = socket.read(&mut buf).await {
+                        request.extend_from_slice(&buf[..n]);
+                        // a GET has no body, so a blank line ends the request
+                        if request.ends_with(b"\r\n\r\n") {
+                            request.clear();
+                            if socket.write_all(response.as_bytes()).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let api_config =
+            blockscout_api_config(url, BLOCKSCOUT_API_TIMEOUT, BLOCKSCOUT_API_CONNECT_TIMEOUT)
+                .unwrap();
+        for _ in 0..2 {
+            blockscout_client::apis::main_page_api::get_indexing_status(&api_config)
+                .await
+                .expect("the server answers every request");
+            // Like the poll period: gives a pooled connection time to go back
+            // to the pool, so reuse would be observable.
+            sleep(Duration::from_millis(200)).await;
+        }
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
     }
 
     #[rstest]
