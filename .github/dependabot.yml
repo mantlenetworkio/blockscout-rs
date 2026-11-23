@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Base images of the services this fork builds. Each FROM is pinned as
+  # tag@digest, so Dependabot opens a PR when an image is republished under
+  # the same tag.
+  - package-ecosystem: docker
+    directories:
+      - /stats
+      - /sig-provider
+    schedule:
+      interval: weekly
+    ignore:
+      # Upstream never republishes a full services-base tag; its version
+      # follows the Rust code and is bumped when syncing with upstream.
+      - dependency-name: "*services-base"
+      # Ubuntu release upgrades (for example 24.04 -> 26.04) are made by hand.
+      - dependency-name: ubuntu
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+    groups:
+      base-images:
+        patterns:
+          - "*"
